@@ -1,0 +1,74 @@
+\documentclass[../RFC-HDFG-2026-003.tex]{subfiles}
+
+\begin{document}
+
+\section{Test Plan}
+\label{sec:test-plan}
+
+\subsection{Blob Storage Tests}
+\label{sec:test-blob}
+
+These tests exercise \texttt{H5Pappend\_filter\_blob} and the blob
+on-disk format (\SectionRef{sec:blob-format}).
+
+\begin{itemize}
+\item \texttt{blob-01} (\textbf{create/open round-trip}): Create a
+  chunked dataset with a filter configured via
+  \texttt{H5Pappend\_filter\_blob} using the library's default
+  \texttt{H5HG}-based storage (\texttt{write\_blob}/\texttt{read\_blob}
+  both \texttt{NULL}). Close and reopen the file; verify the filter's
+  \texttt{read\_blob} path (default reader) returns bytes identical to
+  those originally passed to \texttt{H5Pappend\_filter\_blob}.
+\item \texttt{blob-02} (\textbf{custom callbacks}): Repeat blob-01 with
+  a test filter that implements non-NULL
+  \texttt{write\_blob}/\texttt{read\_blob}/\texttt{close\_blob}; verify
+  all three are invoked at the expected lifecycle points
+  (\SectionRef{sec:blob-lifecycle}) and that \texttt{close\_blob} runs
+  exactly once per \texttt{H5Dclose}.
+\item \texttt{blob-03} (\textbf{delete reclaims heap space}): Create a
+  blob-configured dataset, note the file size, delete the dataset, and
+  verify (e.g., via \texttt{h5stat} or a subsequent
+  \texttt{H5Fget\_freespace} check) that the heap space is reclaimed
+  rather than leaked.
+\item \texttt{blob-04} (\textbf{\texttt{H5Pencode}/\texttt{H5Pdecode}
+  round-trip}): Build a DCPL via \texttt{H5Pappend\_filter\_blob},
+  \texttt{H5Pencode} it, and \texttt{H5Pdecode} the result into a new
+  DCPL in a separate process with no access to the original file. Verify
+  the decoded DCPL's blob bytes are byte-identical to the original,
+  confirming \SectionRef{sec:blob-encode-decode}'s inline-serialization
+  decision.
+\item \texttt{blob-05} (\textbf{\texttt{h5repack} cross-file copy}): Run
+  \texttt{h5repack} on a file containing a blob-configured dataset;
+  verify the output file's dataset reads back correctly and that its
+  blob is stored at a new, independent on-disk locator (not the source
+  file's locator), per \SectionRef{sec:blob-repack}.
+\item \texttt{blob-06} (\textbf{oversized default-storage blob}):
+  Configure a filter via \texttt{H5Pappend\_filter\_blob} with a
+  multi-megabyte buffer using the default \texttt{H5HG}-based storage;
+  verify create/open succeeds and the runtime chunk I/O path is
+  unaffected (compression throughput on the same file is unchanged
+  relative to an equivalent dataset without a blob).
+\item \texttt{blob-E01} (\textbf{malformed call}):
+  \texttt{H5Pappend\_filter\_blob} with \texttt{buf=NULL} and
+  \texttt{size>0}, or \texttt{buf!=NULL} and \texttt{size=0}, returns
+  \texttt{H5E\_BADVALUE} and does not modify the DCPL.
+\item \texttt{blob-E02} (\textbf{unknown filter}):
+  \texttt{H5Pappend\_filter\_blob} with an unregistered filter
+  \texttt{id} returns \texttt{H5E\_NOFILTER}.
+\end{itemize}
+
+\subsection{Parallel HDF5 Tests}
+\label{sec:test-parallel}
+
+This test requires a Parallel HDF5 build and at least two MPI ranks.
+
+\begin{itemize}
+\item \texttt{par-blob} (\textbf{rank-0 write and broadcast}): All ranks
+  call \texttt{H5Pappend\_filter\_blob} with identical arguments,
+  followed by a collective \texttt{H5Dcreate}. Verify that exactly one
+  heap object is created (not one per rank) and that every rank's copy
+  of the pipeline message carries the same locator, confirming the
+  rank-0-write-and-broadcast protocol of \SectionRef{sec:blob-parallel}.
+\end{itemize}
+
+\end{document}

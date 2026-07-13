@@ -1,0 +1,37 @@
+\documentclass[../RFC-HDFG-2026-003.tex]{subfiles}
+
+\begin{document}
+
+\begin{abstract}
+
+
+This RFC proposes in-file blob configuration storage for HDF5 I/O
+filters: a binary channel for filter configuration data too large for
+the \texttt{cd\_values} array or the parameter-string API introduced by
+RFC-HDFG-2026-001. Two use cases motivate it: a JIT-compiled filter
+module that must store multi-megabyte pre-processed source code
+alongside the dataset, and a filter that needs only a small reference
+to a separately-stored HDF5 dataset (e.g., a spatial mask).
+
+The proposed design adds three new, NULL-able callbacks to
+\texttt{H5Z\_class3\_t} --- \texttt{write\_blob}, \texttt{read\_blob}, and
+\texttt{close\_blob} --- and a new public API, \texttt{H5Pappend\_filter\_blob},
+that appends a filter to a pipeline together with an opaque byte buffer.
+The blob is persisted as a global-heap (\texttt{H5HG}) object referenced
+from a new pipeline-message format version; when a filter does not
+implement custom storage callbacks, the library falls back to a default
+\texttt{H5HG}-based reader/writer. This RFC resolves the parallel I/O
+write protocol, the \texttt{H5Pencode}/\texttt{H5Pdecode} serialization
+policy, \texttt{h5repack} cross-file copy behavior, and the on-disk
+storage format, and shows that both motivating use cases are covered by
+the same callback signatures without additional public API surface.
+\end{abstract}
+
+\vfill
+{\footnotesize\textbf{Acknowledgements:} This work is supported by the U.S.\
+Department of Energy, Office of Science, Advanced Scientific Computing Research,
+under Contract DE-AC02-06CH11357 and by the U.S.\ Department of Energy, Office
+of Science, Office of Advanced Scientific Computing Research, Scientific
+Discovery through Advanced Computing (SciDAC) program.}
+
+\end{document}

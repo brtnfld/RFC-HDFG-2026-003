@@ -1,0 +1,114 @@
+\documentclass[letterpaper,hyper]{HDF5_RFC}
+
+%% Extra packages
+
+% Font encoding (provides \textquotedbl and proper glyph access)
+\usepackage[T1]{fontenc}
+
+% \texttt one size smaller than body text, with line-break support
+\renewcommand{\texttt}[1]{\begingroup\small\ttfamily\hyphenchar\font=45 \spaceskip=.5em plus .3em minus .2em #1\endgroup}
+
+% Allow line breaks after underscores (the main cause of overlong \texttt words)
+\let\oldtextunderscore\_
+\renewcommand{\_}{\oldtextunderscore\allowbreak}
+
+
+% Callout box for out-of-scope notices
+\usepackage[skins]{tcolorbox}
+\newtcolorbox{outofscope}{
+  enhanced,
+  colback=yellow!10,
+  colframe=orange!70!black,
+  fonttitle=\bfseries,
+  title={Out of Scope},
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  before=\medskip, after=\medskip
+}
+
+% Callout box for implementation notes
+\newtcolorbox{notebox}{
+  enhanced,
+  colback=blue!5,
+  colframe=blue!50!black,
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  before=\medskip, after=\medskip
+}
+
+% Callout box for under-discussion / undecided items
+\newtcolorbox{underdiscussion}{
+  enhanced,
+  colback=purple!5,
+  colframe=purple!50!black,
+  fonttitle=\bfseries,
+  title={Under Discussion},
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  before=\medskip, after=\medskip
+}
+
+% For long tables spanning multiple pages
+\usepackage{longtable}
+
+% For deeper nested lists
+\usepackage{enumitem}
+\setlistdepth{4}
+
+% Code snippets (minted is loaded by HDF5_RFC.cls)
+\setminted[c]{fontsize=\scriptsize,breaklines,frame=leftline,framesep=2mm,rulecolor=rulecolor,linenos,numbersep=5pt}
+\setminted[bash]{fontsize=\scriptsize,breaklines}
+
+% Document metadata: Title, author(s), etc
+\title{RFC: In-File Blob Configuration Storage for Filters}
+\author{[M. Scot Breitenfeld]}
+\date{2026-07-13}
+\rfcversion{2026-003}
+\organization{HDFG}
+\orglogo{THG_LOGO} % Add PDF with this name (i.e. 'THG_LOGO.pdf') to the images folder
+
+% Revision History
+\input{support/revisions}
+
+% Index of terms, included in table of contents
+\makeindex[intoc]
+
+% Bibliography references, for use in main document
+\addbibresource{support/rfc.bib}
+
+
+%% Start the main document
+\begin{document}
+
+%% Title
+\maketitle
+
+% Abstract
+\subfile{sections/abstract}
+
+% Display revision history
+\makerevisions
+
+% Table of Contents
+\tableofcontents
+
+% Main text of RFC
+\newpage
+\subfile{sections/introduction}
+
+\newpage
+\subfile{sections/architecture}
+
+\newpage
+\subfile{sections/implementation}
+
+\newpage
+\subfile{sections/testing}
+
+% Bibliography (list them in the TOC)
+\newpage
+\phantomsection
+\addcontentsline{toc}{section}{References}
+\printbibliography
+
+% Appendices
+\appendix
+
+\end{document}

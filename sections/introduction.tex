@@ -1,0 +1,115 @@
+\documentclass[../RFC-HDFG-2026-003.tex]{subfiles}
+
+\begin{document}
+
+\section{Introduction}
+\label{sec:intro}
+
+\subsection{Purpose}
+
+This document describes the design for in-file blob configuration
+storage for HDF5 I/O filters: a binary channel for filter configuration
+data too large for the \texttt{cd\_values} array or the parameter-string
+API introduced by RFC-HDFG-2026-001 (string-based filter configuration).
+
+\subsection{Scope}
+
+This design covers:
+
+\begin{itemize}
+\item Three new, optional callbacks on \texttt{H5Z\_class3\_t}:
+  \texttt{write\_blob}, \texttt{read\_blob}, and \texttt{close\_blob}.
+\item A new public API function, \texttt{H5Pappend\_filter\_blob}.
+\item A pipeline-message on-disk format extension to carry a blob
+  alongside a filter's existing \texttt{cd\_values}.
+\item Parallel I/O, \texttt{H5Pencode}/\texttt{H5Pdecode}, and
+  \texttt{h5repack} semantics for blob-configured filters.
+\end{itemize}
+
+This design does not cover:
+
+\begin{itemize}
+\item Changes to \texttt{H5Z\_func\_t}, the runtime I/O callback used by
+  \texttt{H5Z\_class1\_t}/\texttt{H5Z\_class2\_t} filters.
+\item Changes to \texttt{H5Z\_class2\_t} or \texttt{H5Z\_class1\_t}.
+\item Blob support for group fractal heap filters.
+\item Multi-file blob sharing (a blob in file~A referenced by a dataset
+  in file~B).
+\end{itemize}
+
+\subsection{Relationship to RFC-HDFG-2026-001}
+\label{sec:relationship}
+
+This design was, for a short period, folded directly into
+RFC-HDFG-2026-001 as a single feature before being split back out into
+this standalone RFC; the resolved design decisions in
+\SectionRef{sec:decisions} carry forward unchanged from that period.
+
+RFC-HDFG-2026-001 does not reserve any placeholder fields in
+\texttt{H5Z\_class3\_t} for this RFC. An earlier draft reserved three
+\texttt{void~*} fields (\texttt{write\_blob}/\texttt{read\_blob}/\texttt{close\_blob})
+for later activation by this RFC; that approach was dropped because
+pre-reserving an opaque placeholder does not avoid the struct-version
+bump this feature needs once real callback signatures are decided --- it
+only defers the decision. Consequently, this RFC's relationship to
+\texttt{H5Z\_class3\_t} depends on timing:
+
+\begin{itemize}
+\item \textbf{If RFC-HDFG-2026-001 has not yet shipped} when this RFC is
+  adopted, the three blob callbacks (\SectionRef{sec:blob-callbacks}) are
+  added directly to \texttt{H5Z\_class3\_t}, exactly as if they had been
+  part of RFC-HDFG-2026-001 from the start. No new struct version is
+  required.
+\item \textbf{If \texttt{H5Z\_class3\_t} has already shipped}, adding
+  these fields requires a new \texttt{H5Z\_class4\_t} (or equivalent
+  extension mechanism, e.g. the \texttt{H5Z\_CLASS\_T\_VERS\_MAX} pattern
+  documented in RFC-HDFG-2026-001). This RFC does not resolve that
+  question in advance; whoever finalizes this RFC should check the
+  shipped status of \texttt{H5Z\_class3\_t} at that time and adjust
+  accordingly.
+\end{itemize}
+
+\subsection{Motivation}
+\label{sec:motivation}
+
+RFC-HDFG-2026-001 raised the practical filter-configuration-size limit
+from 256 \texttt{cd\_values} elements (~1~KB) to 4096 characters via a
+human-readable parameter string. This is sufficient for most filters
+but not for all. Two use cases from LibPressio (raised by @robertu94
+during the community review of RFC-HDFG-2026-001,
+HDFGroup/hdf5\_plugins\#255; see \texttt{LIBPRESSIO-FEEDBACK.md} in the
+RFC-HDFG-2026-001 repository) remain unaddressed:
+
+\verysubsection{Use Case A --- SZ4 JIT compiler (primary; fundamental size limit)}
+SZ4 features a just-in-time compiler for fast user-defined modules. When
+used, it needs to store pre-processed source code with the dataset ---
+potentially multi-megabyte. There is no external dataset to reference;
+the binary blob must travel with the dataset and be recovered on open.
+This is a pure size limitation that \texttt{cd\_values} and the
+parameter string cannot address.
+
+\verysubsection{Use Case B --- ROIBIN-SZ spatial mask (secondary; reference to another dataset)}
+ROIBIN-SZ stores a binary mask indicating which values use lossless
+compression. The preferred design is for this mask to live as a
+user-visible HDF5 dataset, with only a reference (a small, fixed-size
+byte sequence) stored in the filter configuration. The filter
+dereferences the reference at open time to recover the mask.
+
+Both cases are solved by the same mechanism: a binary blob, opaque to
+the library, stored alongside the dataset's pipeline message and handed
+back to the filter verbatim at open time. This RFC specifies that
+mechanism as a single, complete feature.
+
+\subsection{Goals}
+
+\begin{enumerate}
+\item Filters can store configuration data of essentially arbitrary size,
+  not bounded by \texttt{cd\_values} or the parameter-string limit.
+\item Filters that do not need custom on-disk layout use a default
+  storage implementation with no additional code.
+\item The feature is correct under parallel I/O, DCPL
+  encode/decode, and \texttt{h5repack} cross-file copy.
+\item The runtime chunk I/O hot path is unaffected.
+\end{enumerate}
+
+\end{document}

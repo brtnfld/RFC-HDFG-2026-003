@@ -1,0 +1,51 @@
+\documentclass[../RFC-HDFG-2026-003.tex]{subfiles}
+
+\begin{document}
+
+\section{Implementation Notes}
+\label{sec:impl}
+
+This section maps the design in the preceding sections to the library
+source files it touches.
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{File} & \textbf{Change} \\
+\midrule
+\texttt{src/H5Zdevelop.h} & Add \texttt{H5Z\_blob\_loc\_t} and the three
+  blob callback typedefs; add the three fields to \texttt{H5Z\_class3\_t}
+  (\SectionRef{sec:blob-callbacks}). \\
+\texttt{src/H5Zprivate.h} & Add \texttt{aux\_data}, \texttt{aux\_size},
+  \texttt{aux\_loc} to \texttt{H5Z\_filter\_info\_t}
+  (\SectionRef{sec:blob-internal-state}). \\
+\texttt{src/H5Z.c} & Wire up \texttt{write\_blob}/\texttt{read\_blob}/
+  \texttt{close\_blob} (or the default \texttt{H5HG}-based
+  implementation) into the create/open/close paths
+  (\SectionRef{sec:blob-lifecycle}); implement the rank-0-write-and-broadcast
+  protocol for parallel jobs (\SectionRef{sec:blob-parallel}). \\
+\texttt{src/H5Pocpl.c} & Implement \texttt{H5Pappend\_filter\_blob}
+  (\SectionRef{sec:append-filter-blob}); extend
+  \texttt{H5P\_\_ocrt\_pipeline\_enc}/\texttt{\_dec} to serialize
+  \texttt{aux\_data} inline (\SectionRef{sec:blob-encode-decode}); extend
+  the pipeline-copy callback to deep-copy \texttt{aux\_data}
+  (\SectionRef{sec:blob-repack}). \\
+\texttt{src/H5Opline.c} & Pipeline-message encode/decode of
+  \texttt{has\_aux}/\texttt{aux\_loc} (\SectionRef{sec:blob-format}); the
+  \texttt{delete} handler calls \texttt{H5HG\_remove} to reclaim heap
+  space when a blob-bearing filter entry or dataset is deleted. \\
+\texttt{src/H5Dchunk.c} & No changes. The runtime chunk I/O path
+  (\texttt{H5Z\_pipeline}) is unaffected; the blob is configuration data
+  loaded once at open time. \\
+\texttt{tools/src/h5repack/} & No changes needed; see
+  \SectionRef{sec:blob-repack}. \\
+\texttt{test/} & New tests: create/open/close, parallel write/broadcast,
+  \texttt{H5Pencode}/\texttt{H5Pdecode} round-trip, and \texttt{h5repack}
+  cross-file copy for a blob-configured filter (\SectionRef{sec:test-blob}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

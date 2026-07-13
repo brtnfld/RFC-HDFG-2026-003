@@ -1,0 +1,456 @@
+\documentclass[../RFC-HDFG-2026-003.tex]{subfiles}
+
+\begin{document}
+
+\section{Filter Plugin Class Extension}
+\label{sec:class-extension}
+
+\subsection{Blob Callbacks}
+\label{sec:blob-callbacks}
+
+Three new, NULL-able callbacks are added to \texttt{H5Z\_class3\_t}
+(RFC-HDFG-2026-001): \texttt{write\_blob}, \texttt{read\_blob}, and
+\texttt{close\_blob}. When NULL, the library uses a default
+implementation built on \texttt{H5HG} (the existing global-heap
+mechanism already used for large variable-length attribute data):
+\texttt{H5HG\_insert} for writing, \texttt{H5HG\_read} for reading, and
+\texttt{free()} for closing. Plugins implement these callbacks only when
+they need custom on-disk layout --- for example, alignment requirements
+for GPU DMA transfers directly out of the file buffer.
+
+The three callbacks are independent of \texttt{set\_config}/\texttt{get\_config}:
+a filter's parameter string continues to carry small, human-readable
+configuration, while the blob carries the large, opaque payload. A
+filter that needs both derives any small values it needs from dataset
+properties via the existing \texttt{set\_local} callback, or encodes
+them as a short header inside the blob itself; the blob content is
+entirely filter-defined bytes, so this requires no new library
+mechanism.
+
+\begin{minted}{c}
+/* Fixed-size on-disk locator for a blob's global-heap object.
+ * Opaque to plugin authors; passed back unchanged between write_blob
+ * and read_blob. */
+typedef struct H5Z_blob_loc_t {
+    haddr_t addr;   /* global heap collection address */
+    size_t  idx;    /* object index within the collection */
+} H5Z_blob_loc_t;
+
+/* Called at H5Dcreate time to persist a blob alongside the pipeline
+ * message.  If NULL, the library uses its default H5HG-based writer.
+ * loc_out identifies the stored object for the later read_blob call. */
+typedef herr_t (*H5Z_write_blob_func_t)(hid_t            file_id,
+                                        const void       *buf,
+                                        size_t            size,
+                                        H5Z_blob_loc_t   *loc_out);
+
+/* Called at H5Dopen time to recover a blob written by write_blob.
+ * If NULL, the library uses its default H5HG-based reader.
+ * *buf_out is allocated by the callback (or the library, in the
+ * default case); the caller releases it via close_blob. */
+typedef herr_t (*H5Z_read_blob_func_t)(hid_t            file_id,
+                                       H5Z_blob_loc_t    loc,
+                                       void            **buf_out,
+                                       size_t           *size_out);
+
+/* Called at H5Dclose time to release the in-memory blob buffer
+ * returned by read_blob.  If NULL, the library calls free(). */
+typedef herr_t (*H5Z_close_blob_func_t)(void *buf, size_t size);
+\end{minted}
+
+Added to \texttt{H5Z\_class3\_t}:
+
+\begin{minted}{c}
+    H5Z_write_blob_func_t       write_blob;  /* NULL-able */
+    H5Z_read_blob_func_t        read_blob;   /* NULL-able */
+    H5Z_close_blob_func_t       close_blob;  /* NULL-able */
+\end{minted}
+
+\texttt{H5Z\_blob\_loc\_t} is an opaque locator handed unchanged from
+\texttt{write\_blob} to the pipeline-message encoder and later from the
+decoder to \texttt{read\_blob}; plugin authors do not construct or
+interpret its fields.
+
+Add \texttt{has\_blob\_callbacks} (a \texttt{bool}) to
+\texttt{H5Z\_class\_info\_t} (RFC-HDFG-2026-001) so
+\texttt{H5Zget\_filter\_class\_info} can report whether a registered
+filter implements the blob callbacks.
+
+\subsection{New Internal State: \texttt{H5Z\_filter\_info\_t} Additions}
+\label{sec:blob-internal-state}
+
+\begin{minted}{c}
+/* H5Zprivate.h -- internal only; not part of the public API */
+struct H5Z_filter_info_t {
+    /* ... existing fields ... */
+    void            *aux_data;  /* in-memory blob; NULL if this filter has none */
+    size_t           aux_size;  /* byte length of aux_data                     */
+    H5Z_blob_loc_t   aux_loc;   /* on-disk locator; undefined until written    */
+};
+\end{minted}
+
+
+\section{On-Disk Format}
+\label{sec:blob-format}
+
+The current \texttt{H5O\_PLINE\_VERSION\_2} per-filter layout:
+
+\begin{center}
+\texttt{[id:2][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4][name:variable]}
+\end{center}
+
+This RFC's format adds a \texttt{has\_aux} bit after the name and, when
+set, the fixed-size \texttt{H5Z\_blob\_loc\_t} encoding (address plus
+heap-object index, the same fields \texttt{H5HG\_t} already carries
+internally for other large-object references):
+
+\begin{center}
+\texttt{[id:2][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4][name:variable]}\\
+\texttt{[has\_aux:1][aux\_loc:variable if has\_aux]}
+\end{center}
+
+\textbf{Version number.} This RFC needs a pipeline-message format
+bump. RFC-HDFG-2026-001 introduces no on-disk format change, so this RFC
+is free to claim \texttt{H5O\_PLINE\_VERSION\_3} --- \emph{unless} some
+other RFC has claimed that number first by the time this RFC is
+finalized. Whoever finalizes this RFC should check for version-number
+conflicts with any other pipeline-message format work in flight at that
+time and claim the next free version.
+
+The blob bytes themselves are stored as a global-heap (\texttt{H5HG})
+object; the pipeline message records only the locator, not the bytes
+inline. \texttt{H5O\_pline\_ver\_bounds[]} maps \texttt{H5F\_libver\_t}
+to the pipeline message version; a DCPL with a blob-bearing filter
+requires a libver upper bound that admits this RFC's pipeline-message
+version, exactly as any other version-gated format feature does.
+
+Runtime I/O is unaffected: \texttt{H5Z\_pipeline}, the hot path for
+chunk I/O, touches none of this. The blob is configuration data, loaded
+once at open time; compression/decompression performance is unchanged.
+
+
+\section{Public API}
+\label{sec:public-api}
+
+\subsection{\texttt{H5Pappend\_filter\_blob}}
+\label{sec:append-filter-blob}
+
+\begin{minted}{c}
+herr_t H5Pappend_filter_blob(
+    hid_t         plist_id,
+    H5Z_filter_t  id,
+    unsigned      flags,
+    const void   *buf,
+    size_t        size
+);
+\end{minted}
+
+\verysubsection{Description}
+Appends filter \texttt{id} to the pipeline on \texttt{plist\_id}, exactly
+as RFC-HDFG-2026-001's \texttt{H5Pappend\_filter} does, and attaches
+\texttt{buf}/\texttt{size} as the filter's blob. The bytes are opaque to
+the library; they are handed to the filter's \texttt{write\_blob}
+callback (or the default \texttt{H5HG} writer) at \texttt{H5Dcreate}
+time and recovered via \texttt{read\_blob} (or the default reader) at
+\texttt{H5Dopen} time. \texttt{set\_config} is not invoked for this entry
+point --- the blob path bypasses the parameter-string layer entirely,
+since the whole point of the blob channel is to carry data that does
+not fit through it.
+
+\textbf{Decision: single entry point, no \texttt{H5Z\_params\_t}
+variant.} An earlier draft considered adding \texttt{H5Z\_PARAMS\_BLOB}
+as a third \texttt{H5Z\_params\_type\_t} tag so that blob configuration
+could flow through \texttt{H5Pappend\_filter}'s tagged union. This RFC
+does not do so: \texttt{H5Z\_params\_t} is designed around values that
+fit comfortably in a compound literal, and forcing a multi-megabyte
+buffer through that union would either double-store the buffer or
+complicate its lifetime rules for no benefit. \texttt{H5Pappend\_filter\_blob}
+is a dedicated function with a signature suited to its purpose;
+\texttt{H5Z\_params\_type\_t} is unchanged by this RFC.
+
+\verysubsection{Parameters}
+\begin{itemize}
+\item \texttt{plist\_id}---A dataset creation property list identifier.
+\item \texttt{id}---The filter identifier. The registered filter must
+  implement \texttt{write\_blob}/\texttt{read\_blob} or accept the
+  library's default \texttt{H5HG}-based implementation.
+\item \texttt{flags}---Same semantics as \texttt{H5Pappend\_filter}.
+\item \texttt{buf}---Pointer to the blob bytes. The library copies these
+  bytes into DCPL-owned storage before returning (\SectionRef{sec:blob-encode-decode});
+  the caller's buffer may be freed or reused immediately after the call.
+\item \texttt{size}---Length of \texttt{buf} in bytes. There is no fixed
+  upper bound analogous to \texttt{H5Z\_CONFIG\_STRING\_MAX}; the
+  practical limit is available memory and, in parallel jobs, the cost of
+  the broadcast described in \SectionRef{sec:blob-parallel}.
+\end{itemize}
+
+\verysubsection{Returns}
+Non-negative on success; negative on failure.
+
+\verysubsection{Errors}
+\begin{itemize}
+\item \texttt{H5E\_NOFILTER}---The filter plugin could not be found or
+  loaded.
+\item \texttt{H5E\_BADVALUE}---\texttt{buf} is \texttt{NULL} with nonzero
+  \texttt{size}, or \texttt{size} is zero with non-NULL \texttt{buf}.
+\end{itemize}
+
+
+\section{Dataset Create / Open / Close Lifecycle}
+\label{sec:blob-lifecycle}
+
+\textbf{Create} (\texttt{H5D\_\_create}), after \texttt{H5Z\_set\_local}
+runs, for each filter with \texttt{aux\_data~!=~NULL}:
+\begin{enumerate}
+\item Call \texttt{filter->cls->write\_blob(file\_id, aux\_data, aux\_size,
+  \&aux\_loc)}, or the default \texttt{H5HG} writer if
+  \texttt{write\_blob} is \texttt{NULL}.
+\item Store \texttt{aux\_loc} in \texttt{H5Z\_filter\_info\_t}.
+\item Encode the pipeline message at this RFC's format version with
+  \texttt{has\_aux} set and \texttt{aux\_loc} populated.
+\end{enumerate}
+
+\textbf{Open} (\texttt{H5D\_\_open}):
+\begin{enumerate}
+\item Decode the pipeline message; for each filter with \texttt{has\_aux},
+  read \texttt{aux\_loc}.
+\item Call \texttt{filter->cls->read\_blob(file\_id, aux\_loc, \&aux\_data,
+  \&aux\_size)}, or the default \texttt{H5HG} reader if
+  \texttt{read\_blob} is \texttt{NULL}.
+\item Populate \texttt{aux\_data}/\texttt{aux\_size} in
+  \texttt{H5Z\_filter\_info\_t}.
+\end{enumerate}
+
+\textbf{Close}: Call \texttt{close\_blob(aux\_data, aux\_size)}, or
+\texttt{free()} if \texttt{close\_blob} is \texttt{NULL}, and clear the
+fields.
+
+\textbf{Delete} (dataset deleted, or the filter removed from a pipeline
+being modified): the pipeline message's \texttt{delete} handler in
+\texttt{H5Opline.c} calls \texttt{H5HG\_remove} on \texttt{aux\_loc} to
+reclaim the heap space, analogous to how the fill-value message's
+\texttt{delete} handler frees vlen data today (\texttt{H5Ofill.c}).
+
+
+\section{Resolved Design Decisions}
+\label{sec:decisions}
+
+The four open design questions originally raised for this feature are
+resolved as follows.
+
+\subsection{Parallel I/O Write Protocol}
+\label{sec:blob-parallel}
+
+\noindent\textbf{Decision:} Rank~0 writes the blob; its locator is
+broadcast to all ranks before the pipeline message is encoded.
+
+\texttt{H5HG\_insert} has no MPI awareness: it allocates file space and
+dirties a metadata-cache entry directly, outside the collective-I/O
+coordination that object-header message appends go through. If every
+rank in a collective \texttt{H5D\_\_create} called \texttt{H5HG\_insert}
+independently, each would create a separate heap object at a different
+address, with no way to agree on a single locator for the pipeline
+message. The protocol:
+
+\begin{minted}{c}
+H5Z_blob_loc_t loc;
+
+if (H5F_HAS_FEATURE(file, H5FD_FEAT_HAS_MPI)) {
+    int mpi_rank;
+    MPI_Comm_rank(H5F_mpi_get_comm(file), &mpi_rank);
+    if (mpi_rank == 0)
+        write_blob_or_default(file, aux_data, aux_size, &loc);
+    MPI_Bcast(&loc, sizeof(loc), MPI_BYTE, 0, comm);
+} else {
+    write_blob_or_default(file, aux_data, aux_size, &loc);
+}
+/* all ranks now share the same locator; proceed to encode the
+ * pipeline message collectively */
+\end{minted}
+
+This is the same pattern already used elsewhere in HDF5 for
+single-writer allocations under \texttt{H5FD\_mpio} (e.g., superblock
+writes). Calling \texttt{H5Pappend\_filter\_blob} on a handle opened for
+parallel I/O is legal and must be followed by a collective
+\texttt{H5D\_\_create}; when the DCPL is built before the file is opened
+(the common pattern), the broadcast happens inside \texttt{H5D\_\_create},
+invisible to the caller.
+
+The broadcast is cheap regardless of blob size: only the fixed-size
+locator (a few dozen bytes) is broadcast, never the blob bytes
+themselves, so the cost added to a collective \texttt{H5Dcreate} is
+independent of blob size.
+
+\subsection{\texttt{H5Pencode}/\texttt{H5Pdecode} Policy}
+\label{sec:blob-encode-decode}
+
+\noindent\textbf{Decision:} \texttt{H5Pencode} serializes the blob's
+bytes inline; \texttt{H5Pdecode} leaves the on-disk locator undefined
+until the next \texttt{H5Dcreate}.
+
+\texttt{H5P\_\_ocrt\_pipeline\_enc} encodes filter ID, flags, name, and
+\texttt{cd\_values} --- all in-memory data; no file address appears in
+an encoded DCPL. Fill-value encoding follows the same rule: a serialized
+property must be self-contained, able to survive a buffer, a process
+boundary, or a decode without the original file. \texttt{aux\_loc} is a
+derived, file-specific value; \texttt{aux\_data} is the canonical
+in-memory representation. \texttt{H5P\_\_ocrt\_pipeline\_enc} is
+extended to append, after each filter's \texttt{cd\_values}:
+
+\begin{center}
+\texttt{[has\_aux:1][aux\_size:8 if has\_aux][aux\_data:aux\_size bytes if has\_aux]}
+\end{center}
+
+\texttt{H5P\_\_ocrt\_pipeline\_dec} reads those fields back into
+\texttt{aux\_data}/\texttt{aux\_size} and leaves \texttt{aux\_loc}
+undefined; a subsequent \texttt{H5D\_\_create} using the decoded DCPL
+triggers \texttt{write\_blob} and assigns a real locator in whichever
+file it is used with.
+
+Serializing the locator instead of the bytes was rejected: it would make
+an encoded DCPL valid only in its originating file, breaking every
+\texttt{H5Pdecode}-then-\texttt{H5Dcreate} workflow in a different file.
+Returning an error for blob-bearing DCPLs was also rejected as
+unnecessarily restrictive, since \texttt{aux\_data} is always available
+in memory after \texttt{H5D\_\_open} or after
+\texttt{H5Pappend\_filter\_blob}. The tradeoff accepted is that encoded
+DCPLs carrying a multi-megabyte blob are correspondingly large; this is
+acceptable since \texttt{H5Pencode} is not a hot path and callers
+invoking it on such a DCPL already know they hold unusual data.
+
+\subsection{\texttt{h5repack} and \texttt{H5Pcopy} Behavior}
+\label{sec:blob-repack}
+
+\noindent\textbf{Decision:} No \texttt{h5repack}-specific code is
+needed; \texttt{H5Pcopy} is extended to deep-copy \texttt{aux\_data}.
+
+\texttt{h5repack} copies a normal (non-external) dataset's DCPL via
+\texttt{H5Pcopy(dcpl\_in)} and does not call \texttt{H5HG} functions
+directly. The existing lifecycle already makes this work automatically,
+\emph{provided} \texttt{H5Pcopy} performs a deep copy of
+\texttt{aux\_data}:
+
+\begin{enumerate}
+\item \texttt{H5Dopen} on the source populates \texttt{aux\_data} in the
+  source DCPL's filter entry (via \texttt{read\_blob} or the default
+  reader).
+\item \texttt{H5Pcopy(dcpl\_in)} must \texttt{malloc} + copy the
+  \texttt{aux\_data} buffer for each filter that has one, leaving
+  \texttt{aux\_loc} undefined in the copy (the destination address is
+  not yet known).
+\item \texttt{H5Dcreate} with the copied DCPL in the destination file
+  triggers \texttt{write\_blob} (or the default writer), producing a new
+  heap object at a new locator in the destination file. Only the bytes
+  travel; the source locator is never copied.
+\end{enumerate}
+
+The pipeline message's \texttt{copy} callback in \texttt{H5Opline.c} is
+extended accordingly. When a filter is removed from a pipeline (e.g.,
+\texttt{h5repack}'s \texttt{apply\_filters()} replacing a filter), the
+pipeline message's destructor frees \texttt{aux\_data} the same way it
+already must free other per-filter allocations.
+
+\subsection{Storage Format: Naked \texttt{H5HG}}
+\label{sec:blob-storage-format}
+
+\noindent\textbf{Decision:} Blob bytes are stored as a plain
+\texttt{H5HG} global-heap object, not a new HDF5 object message type.
+
+A new message type (\texttt{H5O\_MSG\_FILTER\_BLOB}) would let
+\texttt{h5dump} label the object (e.g., ``4~MB of SZ4 JIT source''), but
+the payload remains filter-plugin-specific binary data that no generic
+tool can render meaningfully --- the pipeline message already identifies
+the filter, which is the useful part of that label. A new message type
+also carries an ongoing maintenance cost (roughly a dozen callbacks:
+encode, decode, copy, \texttt{raw\_size}, reset, free, delete, link, and
+the pre/copy/post-copy-file hooks) for marginal tooling value. Existing
+HDF5 precedent for ``large binary thing referenced from the object
+header, recovered on demand'' is exactly \texttt{H5HG}, already used for
+large variable-length attribute data. If a genuine tooling need for a
+self-describing message type emerges after deployment, one can be
+introduced in a later file-format version without breaking files
+written under this design --- the pipeline message's \texttt{aux\_loc}
+field would simply become one of several supported locator kinds.
+
+\textbf{\texttt{del} callback obligation:} When a pipeline message is
+deleted (dataset deleted, filter removed), \texttt{H5HG\_remove(file, \&loc)}
+must be called to reclaim the heap space. This is implemented in the
+pipeline message \texttt{delete} handler in \texttt{H5Opline.c},
+analogous to how the fill-value message's \texttt{delete} handler frees
+vlen data (\texttt{H5Ofill.c}).
+
+\subsection{Use Case B: Reference to Another Dataset}
+\label{sec:blob-usecaseb}
+
+Use Case B (ROIBIN-SZ) stores an HDF5 reference to a user-visible mask
+dataset as the filter's blob --- a small, fixed-size byte sequence
+rather than a multi-megabyte payload, but otherwise an ordinary use of
+\texttt{H5Pappend\_filter\_blob}. Dereferencing that reference to fetch
+the mask's actual contents requires a file handle, which an earlier
+draft proposed solving with a new \texttt{H5Z\_get\_file\_id()} accessor
+or an additional \texttt{open\_dataset} callback.
+
+\noindent\textbf{Decision:} Neither is needed. \texttt{read\_blob}
+(\SectionRef{sec:blob-callbacks}) already receives \texttt{file\_id} ---
+required for Use Case A's default \texttt{H5HG}-based storage --- and
+that same handle is sufficient for Use Case B. A filter that stores a
+reference as its blob dereferences it inside its own \texttt{read\_blob}
+implementation using the supplied \texttt{file\_id}, fetches the
+referenced dataset's contents once at open time, and caches them in
+filter-private state (the \texttt{aux\_data} buffer, or memory it
+allocates and tracks itself) for use during subsequent filter-callback
+invocations. No per-chunk file access and no additional public API are
+required; the same callback signature already specified for Use Case A
+covers both use cases.
+
+
+\section{Under Discussion: Retrieving a Default-Stored Blob}
+\label{sec:blob-getter}
+
+\begin{underdiscussion}
+No decision is recorded for this section; it exists to solicit review
+feedback before an accessor is added to the implementation.
+\end{underdiscussion}
+
+Prototype experience surfaced a gap in the default-storage path: a blob
+written through the default \texttt{H5HG} writer is currently
+\emph{write-only}. The library recovers the bytes into the pipeline at
+\texttt{H5Dopen}, and they propagate correctly through \texttt{H5Pcopy},
+\texttt{H5Pencode}/\texttt{H5Pdecode}, and \texttt{h5repack} --- but no
+public API exposes them. An application cannot read a blob back from a
+dataset's DCPL, and a filter cannot consume its own blob unless it
+implements \emph{both} \texttt{write\_blob} and \texttt{read\_blob}: a
+class that implements only \texttt{read\_blob} cannot interpret the
+default writer's locator, because \texttt{H5HG} is library-private. Both
+use cases in \SectionRef{sec:motivation} therefore require custom
+callbacks today, which makes the default storage path considerably less
+useful than it appears.
+
+\noindent\textbf{Option under discussion:} a public accessor,
+
+\begin{minted}{c}
+herr_t H5Pget_filter_blob(
+    hid_t     plist_id,
+    unsigned  idx,        /* pipeline index, as in H5Pget_filter2       */
+    void     *buf,        /* NULL for a size query                      */
+    size_t   *size        /* in: capacity of buf; out: blob byte count */
+);
+\end{minted}
+
+\noindent following the same size-query convention as
+RFC-HDFG-2026-001's \texttt{H5Pget\_filter\_params\_by\_idx}. This would
+let applications and tools (e.g., an \texttt{h5dump~-p} annotation that
+a blob is present and its size) retrieve default-stored blobs, and ---
+notably --- would let a \emph{filter} consume its blob without
+implementing any storage callbacks: the \texttt{set\_local} callback
+already receives the dataset's \texttt{dcpl\_id} and could fetch and
+cache the blob there. That combination (default storage +
+\texttt{set\_local} retrieval) would cover Use Case A with no
+filter-side storage code at all.
+
+Alternatives considered but not currently favoured: keeping the status
+quo (filters that consume blobs must implement both storage callbacks),
+or passing the blob into the filter callback through a new context
+parameter (rejected for widening the hot-path signature).
+
+\end{document}
