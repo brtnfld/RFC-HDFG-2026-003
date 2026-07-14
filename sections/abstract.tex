@@ -20,11 +20,15 @@ that appends a filter to a pipeline together with an opaque byte buffer.
 The blob is persisted as a global-heap (\texttt{H5HG}) object referenced
 from a new pipeline-message format version; when a filter does not
 implement custom storage callbacks, the library falls back to a default
-\texttt{H5HG}-based reader/writer. This RFC resolves the parallel I/O
-write protocol, the \texttt{H5Pencode}/\texttt{H5Pdecode} serialization
-policy, \texttt{h5repack} cross-file copy behavior, and the on-disk
-storage format, and shows that both motivating use cases are covered by
-the same callback signatures without additional public API surface.
+\texttt{H5HG}-based reader/writer. This RFC resolves the
+\texttt{H5Pencode}/\texttt{H5Pdecode} serialization policy,
+\texttt{h5repack} cross-file copy behavior, and the on-disk storage
+format; proposes a collective parallel write protocol consistent with
+the parallel metadata-cache design (pending prototype validation); and
+covers both motivating use cases with the same callback signatures ---
+the dataset-reference case via a path-string convention, since raw
+reference bytes are not persistable and no public reference
+encode/decode API exists today.
 \end{abstract}
 
 \vfill

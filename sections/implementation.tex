@@ -24,8 +24,10 @@ source files it touches.
 \texttt{src/H5Z.c} & Wire up \texttt{write\_blob}/\texttt{read\_blob}/
   \texttt{close\_blob} (or the default \texttt{H5HG}-based
   implementation) into the create/open/close paths
-  (\SectionRef{sec:blob-lifecycle}); implement the rank-0-write-and-broadcast
-  protocol for parallel jobs (\SectionRef{sec:blob-parallel}). \\
+  (\SectionRef{sec:blob-lifecycle}); prototype and validate the
+  collective identical-insert path for parallel jobs, including a
+  debug-build locator-consistency check
+  (\SectionRef{sec:blob-parallel}). \\
 \texttt{src/H5Pocpl.c} & Implement \texttt{H5Pappend\_filter\_blob}
   (\SectionRef{sec:append-filter-blob}); extend
   \texttt{H5P\_\_ocrt\_pipeline\_enc}/\texttt{\_dec} to serialize

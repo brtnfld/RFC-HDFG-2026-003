@@ -51,23 +51,37 @@ RFC-HDFG-2026-001 does not reserve any placeholder fields in
 for later activation by this RFC; that approach was dropped because
 pre-reserving an opaque placeholder does not avoid the struct-version
 bump this feature needs once real callback signatures are decided --- it
-only defers the decision. Consequently, this RFC's relationship to
-\texttt{H5Z\_class3\_t} depends on timing:
+only defers the decision.
+
+\verysubsection{Same-release constraint (normative)}
+
+The blob callbacks and the pipeline-message format version
+(\SectionRef{sec:blob-format}) \textbf{must land in the same library
+release}. The callbacks are non-functional without the on-disk format
+that stores the blob locator, so shipping them earlier adds dead fields
+to a public struct while the design is still exposed to change ---
+and any post-ship signature change forces a \texttt{H5Z\_class4\_t}.
+Speculatively shipping unproven callback fields is exactly how the
+earlier reserved-\texttt{void~*} mistake happened. Concretely:
 
 \begin{itemize}
-\item \textbf{If RFC-HDFG-2026-001 has not yet shipped} when this RFC is
-  adopted, the three blob callbacks (\SectionRef{sec:blob-callbacks}) are
-  added directly to \texttt{H5Z\_class3\_t}, exactly as if they had been
-  part of RFC-HDFG-2026-001 from the start. No new struct version is
-  required.
-\item \textbf{If \texttt{H5Z\_class3\_t} has already shipped}, adding
-  these fields requires a new \texttt{H5Z\_class4\_t} (or equivalent
-  extension mechanism, e.g. the \texttt{H5Z\_CLASS\_T\_VERS\_MAX} pattern
-  documented in RFC-HDFG-2026-001). This RFC does not resolve that
-  question in advance; whoever finalizes this RFC should check the
-  shipped status of \texttt{H5Z\_class3\_t} at that time and adjust
-  accordingly.
+\item \textbf{If RFC-HDFG-2026-001's \texttt{H5Z\_class3\_t} has not yet
+  shipped} when this RFC's format work is scheduled into a release, the
+  three blob callbacks (\SectionRef{sec:blob-callbacks}) are added
+  directly to \texttt{H5Z\_class3\_t} in that same release. No new
+  struct version is required. \texttt{H5Z\_class3\_t} must \emph{not}
+  carry the callbacks in any earlier release that lacks the format
+  version.
+\item \textbf{If \texttt{H5Z\_class3\_t} has already shipped} (without
+  the callbacks, per the previous point), this RFC requires a
+  \texttt{H5Z\_class4\_t} carrying them, introduced --- again --- in the
+  same release as the format version, using the
+  \texttt{H5Z\_CLASS\_T\_VERS\_MAX} versioning pattern documented in
+  RFC-HDFG-2026-001.
 \end{itemize}
+
+Release targeting for the format version itself is discussed in
+\SectionRef{sec:release-targeting}.
 
 \subsection{Motivation}
 \label{sec:motivation}

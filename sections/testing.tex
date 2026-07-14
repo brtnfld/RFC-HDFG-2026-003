@@ -55,20 +55,51 @@ on-disk format (\SectionRef{sec:blob-format}).
 \item \texttt{blob-E02} (\textbf{unknown filter}):
   \texttt{H5Pappend\_filter\_blob} with an unregistered filter
   \texttt{id} returns \texttt{H5E\_NOFILTER}.
+\item \texttt{blob-07} (\textbf{duplicate filter IDs, distinct blobs}):
+  Append the same filter ID twice to one pipeline via two
+  \texttt{H5Pappend\_filter\_blob} calls with different blobs; verify
+  after create/reopen that each pipeline entry recovers its own blob
+  (per-entry association, \SectionRef{sec:append-filter-blob}).
+\item \texttt{blob-08} (\textbf{per-dataset blobs via copy-then-tweak}):
+  Build a base DCPL, \texttt{H5Pcopy} it, append the same filter with a
+  different blob in each copy, create two datasets; verify each dataset
+  reads back its own blob (\SectionRef{sec:blob-per-dataset}).
+\item \texttt{blob-09} (\textbf{path-string dataset association, Use
+  Case B pattern}): With a test filter that stores a mask dataset's
+  path in its blob, create the mask and the filtered dataset, reopen
+  the file, and verify the filter's \texttt{read\_blob} opens the mask
+  via \texttt{H5Dopen2(file\_id, path, ...)} and reads correct contents
+  (\SectionRef{sec:blob-usecaseb}).
 \end{itemize}
 
 \subsection{Parallel HDF5 Tests}
 \label{sec:test-parallel}
 
-This test requires a Parallel HDF5 build and at least two MPI ranks.
+These tests require a Parallel HDF5 build and at least two MPI ranks.
+They validate the proposed collective identical-insert protocol
+(\SectionRef{sec:blob-parallel}) and are prerequisites for marking that
+protocol resolved.
 
 \begin{itemize}
-\item \texttt{par-blob} (\textbf{rank-0 write and broadcast}): All ranks
-  call \texttt{H5Pappend\_filter\_blob} with identical arguments,
-  followed by a collective \texttt{H5Dcreate}. Verify that exactly one
-  heap object is created (not one per rank) and that every rank's copy
-  of the pipeline message carries the same locator, confirming the
-  rank-0-write-and-broadcast protocol of \SectionRef{sec:blob-parallel}.
+\item \texttt{par-blob-01} (\textbf{collective identical insert}): All
+  ranks call \texttt{H5Pappend\_filter\_blob} with identical arguments,
+  followed by a collective \texttt{H5Dcreate}. Verify that every rank
+  independently computes the identical \texttt{H5Z\_blob\_loc\_t}
+  (compare via \texttt{MPI\_Allgather}), that the file contains exactly
+  one heap object for the blob, and that the file passes
+  \texttt{h5debug}/\texttt{h5stat} integrity checks after close.
+\item \texttt{par-blob-02} (\textbf{cache-state consistency}): After the
+  collective create, force metadata-cache sync points (many further
+  metadata operations) and close collectively; verify no hang and no
+  corruption --- this exercises the \texttt{dirty\_bytes}/sync-point
+  accounting that the rank-0-only design would have broken.
+\item \texttt{par-blob-03} (\textbf{read path}): Reopen the file with all
+  ranks and independently read the filtered dataset; verify blob
+  recovery on every rank.
+\item \texttt{par-blob-04} (\textbf{allocation-settings matrix}): Repeat
+  \texttt{par-blob-01} under paged allocation and non-default
+  free-space-manager settings (\SectionRef{sec:blob-parallel} open
+  items).
 \end{itemize}
 
 \end{document}

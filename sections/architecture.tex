@@ -128,6 +128,80 @@ Runtime I/O is unaffected: \texttt{H5Z\_pipeline}, the hot path for
 chunk I/O, touches none of this. The blob is configuration data, loaded
 once at open time; compression/decompression performance is unchanged.
 
+\subsection{Alternative Considered: No-Format-Change Attribute Convention}
+\label{sec:blob-attr-fallback}
+
+A file format change is unavoidable for \emph{first-class} blob
+support: every field in the current pipeline message record is a small
+fixed integer or the inline name/\texttt{cd\_values}; the global-heap
+locator has nowhere to live. The one genuine no-format-change
+alternative is a reserved-attribute convention --- store the blob (or
+its heap locator) in a conventionally-named attribute on the dataset,
+the way dimension scales are implemented entirely as
+\texttt{DIMENSION\_LIST}/\texttt{REFERENCE\_LIST} attributes with no
+format change.
+
+This RFC \textbf{rejects} that fallback for the primary design, for
+concrete reasons:
+
+\begin{itemize}
+\item \textbf{No structural binding to a pipeline entry.} An attribute
+  hangs off the dataset, not off filter entry $i$ of the pipeline; the
+  association (including the duplicate-filter-ID case,
+  \SectionRef{sec:append-filter-blob}) would be by fragile naming
+  convention.
+\item \textbf{No lifecycle coupling.} The pipeline message's
+  copy/delete paths (\texttt{H5O\_\_pline\_copy\_file}, the
+  \texttt{delete} handler) would not carry or reclaim the attribute;
+  every tool and code path that touches pipelines would need parallel
+  attribute plumbing.
+\item \textbf{Namespace pollution.} The blob becomes a user-visible,
+  user-mutable attribute, with collision risk against application
+  attribute names.
+\end{itemize}
+
+It remains available as a stopgap a filter author can implement
+privately today (a filter's \texttt{set\_local} can read a
+conventionally-named attribute via the dataset's properties), and
+nothing in this RFC forbids that --- but the library-supported
+mechanism is the versioned pipeline message.
+
+\subsection{Release and Format-Generation Targeting}
+\label{sec:release-targeting}
+
+The pipeline-message version mechanism does not require a major
+release. The standard, repeatedly-used pattern is: add the new message
+version, add a row to \texttt{H5O\_pline\_ver\_bounds[]}, and let
+\texttt{H5Pset\_libver\_bounds} gate emission --- exactly how the
+layout message v4 (virtual datasets) shipped in HDF5~1.10, and how the
+datatype, fill-value, and link-info messages have all evolved. Older
+libraries encountering the new version fail cleanly with ``bad version
+number for filter pipeline message.''
+
+Two coordination requirements, rather than technical blockers, govern
+the targeting decision:
+
+\begin{itemize}
+\item \textbf{Same-release constraint} (\SectionRef{sec:relationship}):
+  the filter-class callbacks and the pipeline-message version must ship
+  together.
+\item \textbf{One bump, not two.} RFC-HDFG-2026-001 defers a typed
+  \texttt{cd\_values} on-disk extension to a future pipeline-message
+  version. If both extensions are plausible within the same planning
+  horizon, they should target the \emph{same} new message version and
+  the same format bound, so the pipeline message does not take two
+  consecutive incompatible bumps.
+\end{itemize}
+
+If the project designates a format-generation release (a ``3.0'' in the
+reviewer's framing) for accumulated format work, this RFC's message
+version should be introduced at that release's format bound; note that
+\texttt{H5F\_LIBVER\_V200} already exists as a defined format slot at
+which no message currently bumps its version, illustrating that bounds
+and message versions are decoupled. This RFC takes no position on
+release numbering; it requires only libver gating and the two
+coordination rules above.
+
 
 \section{Public API}
 \label{sec:public-api}
@@ -148,7 +222,7 @@ herr_t H5Pappend_filter_blob(
 \verysubsection{Description}
 Appends filter \texttt{id} to the pipeline on \texttt{plist\_id}, exactly
 as RFC-HDFG-2026-001's \texttt{H5Pappend\_filter} does, and attaches
-\texttt{buf}/\texttt{size} as the filter's blob. The bytes are opaque to
+\texttt{buf}/\texttt{size} as that entry's blob. The bytes are opaque to
 the library; they are handed to the filter's \texttt{write\_blob}
 callback (or the default \texttt{H5HG} writer) at \texttt{H5Dcreate}
 time and recovered via \texttt{read\_blob} (or the default reader) at
@@ -156,6 +230,19 @@ time and recovered via \texttt{read\_blob} (or the default reader) at
 point --- the blob path bypasses the parameter-string layer entirely,
 since the whole point of the blob channel is to carry data that does
 not fit through it.
+
+\textbf{The blob is associated with the pipeline \emph{entry}, not with
+the filter ID.} HDF5 pipelines legally contain multiple entries with
+the same filter ID, and the existing ID-addressed APIs
+(\texttt{H5Pmodify\_filter}, \texttt{H5Z\_filter\_in\_pline}) resolve an
+ID to the \emph{first} matching entry. A blob keyed by ID would inherit
+that first-match ambiguity. \texttt{H5Pappend\_filter\_blob} avoids it
+structurally: each call creates one new pipeline entry and binds the
+blob to that entry (positionally, in \texttt{H5Z\_filter\_info\_t});
+two entries with the same ID and different blobs are well-defined. Any
+future blob accessor (\SectionRef{sec:blob-getter}) must likewise
+address entries by pipeline index --- as \texttt{H5Pget\_filter2} does
+--- never by filter ID.
 
 \textbf{Decision: single entry point, no \texttt{H5Z\_params\_t}
 variant.} An earlier draft considered adding \texttt{H5Z\_PARAMS\_BLOB}
@@ -180,8 +267,8 @@ is a dedicated function with a signature suited to its purpose;
   the caller's buffer may be freed or reused immediately after the call.
 \item \texttt{size}---Length of \texttt{buf} in bytes. There is no fixed
   upper bound analogous to \texttt{H5Z\_CONFIG\_STRING\_MAX}; the
-  practical limit is available memory and, in parallel jobs, the cost of
-  the broadcast described in \SectionRef{sec:blob-parallel}.
+  practical limit is available memory (note that the blob is deep-copied
+  with the DCPL, \SectionRef{sec:blob-per-dataset}).
 \end{itemize}
 
 \verysubsection{Returns}
@@ -193,6 +280,70 @@ Non-negative on success; negative on failure.
   loaded.
 \item \texttt{H5E\_BADVALUE}---\texttt{buf} is \texttt{NULL} with nonzero
   \texttt{size}, or \texttt{size} is zero with non-NULL \texttt{buf}.
+\end{itemize}
+
+\subsection{Programming Model: Per-Dataset Blobs}
+\label{sec:blob-per-dataset}
+
+A DCPL is a template: at \texttt{H5Dcreate} the dataset takes a private
+deep copy of it (\texttt{H5P\_copy\_plist} in \texttt{H5D\_\_create}),
+so mutating the caller's DCPL never affects an existing dataset. A
+direct consequence is the question every reviewer asks first:
+\emph{``one DCPL, two datasets, same filter, different blobs?''}
+
+\noindent\textbf{Answer: one DCPL per distinct blob} (create a fresh
+DCPL, or \texttt{H5Pcopy} an existing one and re-append the filter with
+the other blob). This is not a workaround; it is the established HDF5
+idiom for per-dataset configuration that lives in the DCPL:
+
+\begin{itemize}
+\item \textbf{Virtual dataset mappings} (\texttt{H5Pset\_virtual}) ---
+  inherently per-dataset source-file/dataset/selection mappings, stored
+  in the DCPL layout property; one DCPL per VDS.
+\item \textbf{External file lists} (\texttt{H5Pset\_external}) ---
+  per-dataset file names in the DCPL; distinct configuration, distinct
+  DCPL.
+\item \texttt{h5repack} itself uses copy-then-tweak
+  (\texttt{H5Pcopy(dcpl\_in)} then adjust the pipeline) for every output
+  dataset.
+\end{itemize}
+
+\verysubsection{Cost note: the blob is deep-copied with the pipeline}
+
+The pipeline property is deep-copied on every \texttt{H5Pcopy}
+\emph{and} on every \texttt{H5Dcreate} (each dataset's private DCPL
+copy). A multi-megabyte blob therefore gets duplicated on each of these
+operations under the na\"ive implementation. The implementation should
+store \texttt{aux\_data} in a reference-counted (copy-on-write) buffer
+inside the pipeline property so DCPL copies share one allocation; the
+buffer is immutable after \texttt{H5Pappend\_filter\_blob}, so sharing
+is safe. This is an implementation-quality requirement, not a format or
+API question.
+
+\verysubsection{Alternatives considered for per-dataset association}
+
+\begin{itemize}
+\item \textbf{Create-time argument} (blob passed to a new
+  \texttt{H5Dcreate}-family call alongside \texttt{type\_id}/\texttt{space\_id},
+  which are precedent for per-dataset arguments): keeps the DCPL a pure
+  reusable template, but adds a create-signature variant --- the very
+  thing property lists exist to avoid. Rejected for now; revisit if the
+  one-DCPL-per-blob model proves burdensome in practice.
+\item \textbf{Post-create attach} (an \texttt{H5Dset\_extent}-style
+  operation on an existing dataset): keeps the template clean, but the
+  blob would not exist at \texttt{H5Dcreate} time --- after the pipeline
+  message is first written --- forcing an object-header rewrite and
+  ordering/atomicity questions. Rejected.
+\item \textbf{\texttt{set\_local}-driven override}: \texttt{H5Z\_set\_local}
+  already runs against the dataset's \emph{private} DCPL copy, and
+  built-in filters (shuffle, szip) already rewrite their own pipeline
+  entry per dataset there. A filter whose blob is \emph{derivable} from
+  the dataset's datatype/dataspace can compute and install it in
+  \texttt{set\_local}, giving true one-template-DCPL behavior with no
+  new API. This works today under this RFC's design and is the
+  recommended pattern for author-computed blobs; it does not help
+  \emph{caller-supplied} per-dataset blobs, which use the
+  one-DCPL-per-blob model above.
 \end{itemize}
 
 
@@ -232,54 +383,109 @@ reclaim the heap space, analogous to how the fill-value message's
 \texttt{delete} handler frees vlen data today (\texttt{H5Ofill.c}).
 
 
-\section{Resolved Design Decisions}
+\section{Design Decisions}
 \label{sec:decisions}
 
-The four open design questions originally raised for this feature are
-resolved as follows.
+Of the design questions originally raised for this feature, three ---
+the \texttt{H5Pencode}/\texttt{H5Pdecode} policy, \texttt{h5repack}
+behavior, and the storage format --- are resolved below. The parallel
+I/O write protocol (\SectionRef{sec:blob-parallel}) is \emph{proposed
+but pending prototype validation}: review against the library's
+parallel metadata-cache design invalidated the protocol an earlier
+draft had recorded as resolved. The reference-to-dataset use case
+(\SectionRef{sec:blob-usecaseb}) was likewise redesigned following
+review.
 
-\subsection{Parallel I/O Write Protocol}
+\subsection{Parallel I/O Write Protocol (Proposed, Pending Validation)}
 \label{sec:blob-parallel}
 
-\noindent\textbf{Decision:} Rank~0 writes the blob; its locator is
-broadcast to all ranks before the pipeline message is encoded.
+\begin{underdiscussion}
+This subsection records a proposed protocol, not a resolved decision.
+An earlier draft resolved this question as ``rank~0 writes the blob and
+broadcasts its locator''; checking that protocol against the parallel
+metadata-cache implementation showed it to be unworkable (see below).
+The replacement must be validated by a prototype, reviewed with the
+metadata-cache maintainers, before this subsection can be marked
+resolved.
+\end{underdiscussion}
 
-\texttt{H5HG\_insert} has no MPI awareness: it allocates file space and
-dirties a metadata-cache entry directly, outside the collective-I/O
-coordination that object-header message appends go through. If every
-rank in a collective \texttt{H5D\_\_create} called \texttt{H5HG\_insert}
-independently, each would create a separate heap object at a different
-address, with no way to agree on a single locator for the pipeline
-message. The protocol:
+\verysubsection{Why rank-0-only writing fails}
 
-\begin{minted}{c}
-H5Z_blob_loc_t loc;
+\texttt{H5HG\_insert} performs three metadata-cache-visible actions:
+a file-space allocation (\texttt{H5MF\_alloc}, \texttt{H5HG.c}), a
+cache-entry insert (\texttt{H5AC\_insert\_entry}), and a
+dirty-on-unprotect (\texttt{H5AC\_\_DIRTIED\_FLAG}). The parallel
+metadata cache's coherency protocol requires that \emph{every rank
+perform the identical sequence of metadata operations}; the invariant
+is stated in \texttt{H5ACmpio.c}: \emph{``all operations writing
+metadata must be collective. Thus all metadata caches see the same
+sequence of operations, and therefore the same dirty data creation.''}
+The mechanism that enforces it is concrete: each rank advances a
+\texttt{dirty\_bytes} counter for every insert/dirty, and collective
+cache sync points trigger when that counter crosses a shared threshold.
+If only rank~0 inserted the blob's heap object, rank~0's counter and
+cache contents would diverge from every other rank's, desynchronizing
+the collective sync points --- deadlock or corruption. This is
+precisely why variable-length and region-reference \emph{writes} are
+disabled outright under MPI (\texttt{H5Dio.c}: \emph{``they use the
+global heap in the file and we don't support parallel access of that
+yet''}) rather than special-cased. The rank-0-plus-broadcast patterns
+that do exist in the library (superblock-signature search, collective
+read optimizations) are read-side and raw/VFD-level; no code today
+broadcasts a newly created dirty metadata entry, and no machinery
+exists to inject one into other ranks' caches.
 
-if (H5F_HAS_FEATURE(file, H5FD_FEAT_HAS_MPI)) {
-    int mpi_rank;
-    MPI_Comm_rank(H5F_mpi_get_comm(file), &mpi_rank);
-    if (mpi_rank == 0)
-        write_blob_or_default(file, aux_data, aux_size, &loc);
-    MPI_Bcast(&loc, sizeof(loc), MPI_BYTE, 0, comm);
-} else {
-    write_blob_or_default(file, aux_data, aux_size, &loc);
-}
-/* all ranks now share the same locator; proceed to encode the
- * pipeline message collectively */
-\end{minted}
+\verysubsection{Proposed protocol: collective identical insert, no broadcast}
 
-This is the same pattern already used elsewhere in HDF5 for
-single-writer allocations under \texttt{H5FD\_mpio} (e.g., superblock
-writes). Calling \texttt{H5Pappend\_filter\_blob} on a handle opened for
-parallel I/O is legal and must be followed by a collective
-\texttt{H5D\_\_create}; when the DCPL is built before the file is opened
-(the common pattern), the broadcast happens inside \texttt{H5D\_\_create},
-invisible to the caller.
+At \texttt{H5Dcreate} time the situation is better than the general
+global-heap-write problem, because dataset-creation metadata in
+parallel HDF5 is already produced \emph{redundantly but identically on
+every rank}: each rank runs the same code against the same cache state,
+and the cache layer coordinates who physically writes. A blob supplied
+via \texttt{H5Pappend\_filter\_blob} is part of the DCPL, and parallel
+HDF5 already requires the DCPL to be identical on all ranks at a
+collective \texttt{H5Dcreate}. The proposal is therefore:
 
-The broadcast is cheap regardless of blob size: only the fixed-size
-locator (a few dozen bytes) is broadcast, never the blob bytes
-themselves, so the cost added to a collective \texttt{H5Dcreate} is
-independent of blob size.
+\begin{itemize}
+\item \textbf{Every rank calls the identical default blob writer}
+  (\texttt{H5HG\_insert} with identical bytes and size) at the same
+  point in \texttt{H5D\_\_create}. Under the identical-operations
+  invariant, every rank computes the same \texttt{H5MF\_alloc} address
+  from identical free-space state and inserts the identical dirty
+  entry; every rank therefore arrives at the same
+  \texttt{H5Z\_blob\_loc\_t} deterministically, and \textbf{no broadcast
+  is needed at all}.
+\item This does not conflict with the VL/region-reference write ban:
+  that ban concerns \texttt{H5Dwrite}-time element data, which differs
+  per rank and flows through independent I/O paths. The blob is
+  create-time, collective, and rank-identical by DCPL rules --- exactly
+  the conditions the redundant-metadata model requires.
+\end{itemize}
+
+\verysubsection{Open items before this can be marked resolved}
+
+\begin{itemize}
+\item The determinism argument inherits the identical-operations
+  invariant; any \emph{pre-existing} rank divergence would surface here
+  as silent locator divergence. A debug-build consistency check (e.g.,
+  \texttt{MPI\_Bcast} rank~0's locator and compare) should be part of
+  the prototype.
+\item Interaction with paged allocation and free-space-manager
+  settings, and the \texttt{H5FD\_MEM\_GHEAP} allocation type, needs
+  checking.
+\item Validation and review with the parallel metadata-cache
+  maintainers.
+\end{itemize}
+
+\verysubsection{Custom callbacks in parallel (normative)}
+
+A filter's custom \texttt{write\_blob} inherits the same requirement:
+in a parallel job it \textbf{must} perform identical file-modifying
+operations on every rank (or perform none, delegating storage to the
+default writer). A \texttt{write\_blob} that behaves differently per
+rank --- including one that internally attempts rank-0-only writing ---
+is undefined behavior in parallel. The library documentation for
+\texttt{H5Z\_write\_blob\_func\_t} must state this.
 
 \subsection{\texttt{H5Pencode}/\texttt{H5Pdecode} Policy}
 \label{sec:blob-encode-decode}
@@ -334,10 +540,10 @@ directly. The existing lifecycle already makes this work automatically,
 \item \texttt{H5Dopen} on the source populates \texttt{aux\_data} in the
   source DCPL's filter entry (via \texttt{read\_blob} or the default
   reader).
-\item \texttt{H5Pcopy(dcpl\_in)} must \texttt{malloc} + copy the
-  \texttt{aux\_data} buffer for each filter that has one, leaving
-  \texttt{aux\_loc} undefined in the copy (the destination address is
-  not yet known).
+\item \texttt{H5Pcopy(dcpl\_in)} must give the copy its own logical
+  \texttt{aux\_data} (a deep copy, or a shared reference-counted buffer
+  per \SectionRef{sec:blob-per-dataset}), leaving \texttt{aux\_loc}
+  undefined in the copy (the destination address is not yet known).
 \item \texttt{H5Dcreate} with the copied DCPL in the destination file
   triggers \texttt{write\_blob} (or the default writer), producing a new
   heap object at a new locator in the destination file. Only the bytes
@@ -379,29 +585,79 @@ pipeline message \texttt{delete} handler in \texttt{H5Opline.c},
 analogous to how the fill-value message's \texttt{delete} handler frees
 vlen data (\texttt{H5Ofill.c}).
 
-\subsection{Use Case B: Reference to Another Dataset}
+\subsection{Use Case B: Reference to Another Dataset (Revised)}
 \label{sec:blob-usecaseb}
 
-Use Case B (ROIBIN-SZ) stores an HDF5 reference to a user-visible mask
-dataset as the filter's blob --- a small, fixed-size byte sequence
-rather than a multi-megabyte payload, but otherwise an ordinary use of
-\texttt{H5Pappend\_filter\_blob}. Dereferencing that reference to fetch
-the mask's actual contents requires a file handle, which an earlier
-draft proposed solving with a new \texttt{H5Z\_get\_file\_id()} accessor
-or an additional \texttt{open\_dataset} callback.
+Use Case B (ROIBIN-SZ) needs the filter to locate a user-visible mask
+dataset at open time. An earlier draft resolved this by having the
+filter store an \texttt{H5R\_ref\_t} object reference as its blob and
+dereference it inside \texttt{read\_blob} using the supplied
+\texttt{file\_id}. \textbf{That design is withdrawn}: it cannot be
+implemented correctly by a plugin today.
 
-\noindent\textbf{Decision:} Neither is needed. \texttt{read\_blob}
-(\SectionRef{sec:blob-callbacks}) already receives \texttt{file\_id} ---
-required for Use Case A's default \texttt{H5HG}-based storage --- and
-that same handle is sufficient for Use Case B. A filter that stores a
-reference as its blob dereferences it inside its own \texttt{read\_blob}
-implementation using the supplied \texttt{file\_id}, fetches the
-referenced dataset's contents once at open time, and caches them in
-filter-private state (the \texttt{aux\_data} buffer, or memory it
-allocates and tracks itself) for use during subsequent filter-callback
-invocations. No per-chunk file access and no additional public API are
-required; the same callback signature already specified for Use Case A
-covers both use cases.
+\verysubsection{Why raw reference bytes do not persist}
+
+The public \texttt{H5R\_ref\_t} is a 64-byte opaque buffer whose actual
+contents (\texttt{H5R\_ref\_priv\_t}) include a \emph{cached process-local}
+\texttt{hid\_t loc\_id}, an application-reference-count flag, and ---
+depending on reference type --- raw heap pointers (\texttt{char
+*filename}, \texttt{H5S\_t *space}, \texttt{char *name}). Copied to
+disk and read back in a later session, the stale \texttt{loc\_id} and
+dangling pointers make any use of the bytes undefined. The library
+itself never persists this form: when a reference is written into a
+dataset or attribute, the reference-datatype conversion path calls the
+\emph{internal} encoder \texttt{H5R\_\_encode} (versioned header,
+length-prefixed object token, serialized filename/selection/name) and
+stores the encoded stream through the global-heap blob layer; on read,
+\texttt{H5R\_\_decode} deliberately resets \texttt{loc\_id} to
+\texttt{H5I\_INVALID\_HID} and the library re-attaches the currently
+open file. Crucially, \texttt{H5R\_\_encode}/\texttt{H5R\_\_decode} are
+package-private --- \textbf{there is no public
+\texttt{H5Rencode}/\texttt{H5Rdecode}} --- so a filter plugin has no
+supported way to produce or consume the persistable encoding itself.
+
+\verysubsection{Revised design (primary): store the mask dataset's path}
+
+The filter stores the mask dataset's absolute path name inside its blob
+(the blob is filter-defined bytes; a NUL-terminated path plus any
+filter-private header is an ordinary payload). At \texttt{H5Dopen} time,
+\texttt{read\_blob} --- or the filter's first use --- opens the mask via
+\texttt{H5Dopen2(file\_id, path, H5P\_DEFAULT)} using the
+\texttt{file\_id} the callback already receives. This requires no
+reference machinery, no extra global-heap object, no temporary
+reference objects, and no new public API; and because the path names an
+object in the same file, \texttt{h5repack} copies (which copy the whole
+file's object tree) keep it valid. \textbf{Limitation (documented, not
+solved):} a path is not rename-proof --- moving or renaming the mask
+dataset breaks the association. Applications that rename must update
+the blob (recreate the dataset or re-append the filter).
+
+\verysubsection{Alternative (prerequisite API): public
+\texttt{H5Rencode}/\texttt{H5Rdecode}}
+
+If rename-proof semantics are required, the clean path is a small,
+separate RFC adding public \texttt{H5Rencode}/\texttt{H5Rdecode}
+wrappers over the existing internal encoder (the same
+size-query-then-fill convention as \texttt{H5Sencode}/\texttt{H5Tencode}/
+\texttt{H5Pencode}). A filter would then store the \emph{encoded}
+reference in its blob, call \texttt{H5Rdecode} in \texttt{read\_blob},
+and open the object via \texttt{H5Ropen\_object} with the supplied
+\texttt{file\_id} as the location. This RFC does not gate on that
+addition; it names it as the supported future upgrade path from
+path-string association.
+
+\verysubsection{Partial I/O on the mask}
+
+Reading the entire mask into memory inside \texttt{read\_blob} at
+\texttt{H5Dopen} time is the simple model but forecloses partial I/O
+for very large masks. Two conforming alternatives: the filter may hold
+the opened \texttt{hid\_t} for the mask dataset and defer actual reads
+to filter-execution time, using the chunk coordinates
+(\texttt{scaled}/\texttt{ndims}) that \texttt{H5Z\_func2\_t}
+(RFC-HDFG-2026-001) supplies to select and read only the mask region
+covering the current chunk; or, for version~1 of a filter, accept
+full-mask materialization at open and document the memory cost. The
+library imposes no policy here; the blob carries only the path.
 
 
 \section{Under Discussion: Retrieving a Default-Stored Blob}
