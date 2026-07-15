@@ -18,7 +18,10 @@ The proposed design adds three new, NULL-able callbacks to
 \texttt{close\_blob} --- and a new public API, \texttt{H5Pappend\_filter\_blob},
 that appends a filter to a pipeline together with an opaque byte buffer.
 The blob is persisted as a global-heap (\texttt{H5HG}) object referenced
-from a new pipeline-message format version; when a filter does not
+from the filter-pipeline message, extending the version-3 record that
+RFC-HDFG-2026-001 introduces for verbatim configuration-string storage
+(folded into version~3 if the two RFCs ship in the same release,
+otherwise as version~4); when a filter does not
 implement custom storage callbacks, the library falls back to a default
 \texttt{H5HG}-based reader/writer. This RFC resolves the
 \texttt{H5Pencode}/\texttt{H5Pdecode} serialization policy,

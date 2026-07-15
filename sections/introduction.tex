@@ -45,6 +45,17 @@ RFC-HDFG-2026-001 as a single feature before being split back out into
 this standalone RFC; the resolved design decisions in
 \SectionRef{sec:decisions} carry forward unchanged from that period.
 
+RFC-HDFG-2026-001 has since taken an on-disk format change into its own
+scope: it defines \texttt{H5O\_PLINE\_VERSION\_3}, which persists the
+validated parameter string verbatim in each pipeline entry, gated by
+\texttt{H5Pset\_libver\_bounds}. That change is favorable to this RFC:
+the pipeline-message versioning plumbing (encoder/decoder branching,
+\texttt{H5O\_pline\_ver\_bounds[]} row, libver gating, copy/delete
+handling) that this RFC's blob locator needs is now being built by
+RFC-HDFG-2026-001 rather than introduced here, and this RFC layers a
+per-entry blob locator on the version-3 record
+(\SectionRef{sec:blob-format}).
+
 RFC-HDFG-2026-001 does not reserve any placeholder fields in
 \texttt{H5Z\_class3\_t} for this RFC. An earlier draft reserved three
 \texttt{void~*} fields (\texttt{write\_blob}/\texttt{read\_blob}/\texttt{close\_blob})
