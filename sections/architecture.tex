@@ -407,28 +407,18 @@ reclaim the heap space, analogous to how the fill-value message's
 \section{Design Decisions}
 \label{sec:decisions}
 
-Of the design questions originally raised for this feature, three ---
+Of the design questions originally raised for this feature, four ---
 the \texttt{H5Pencode}/\texttt{H5Pdecode} policy, \texttt{h5repack}
-behavior, and the storage format --- are resolved below. The parallel
-I/O write protocol (\SectionRef{sec:blob-parallel}) is \emph{proposed
-but pending prototype validation}: review against the library's
-parallel metadata-cache design invalidated the protocol an earlier
-draft had recorded as resolved. The reference-to-dataset use case
-(\SectionRef{sec:blob-usecaseb}) was likewise redesigned following
-review.
+behavior, the storage format, and the parallel I/O write protocol ---
+are resolved below. The reference-to-dataset use case
+(\SectionRef{sec:blob-usecaseb}) was redesigned following review.
 
-\subsection{Parallel I/O Write Protocol (Proposed, Pending Validation)}
+\subsection{Parallel I/O Write Protocol}
 \label{sec:blob-parallel}
 
-\begin{underdiscussion}
-This subsection records a proposed protocol, not a resolved decision.
-An earlier draft resolved this question as ``rank~0 writes the blob and
-broadcasts its locator''; checking that protocol against the parallel
-metadata-cache implementation showed it to be unworkable (see below).
-The replacement must be validated by a prototype, reviewed with the
-metadata-cache maintainers, before this subsection can be marked
-resolved.
-\end{underdiscussion}
+\noindent\textbf{Decision:} every rank performs an identical
+\texttt{H5HG\_insert} (or identical custom \texttt{write\_blob}) at the
+same point in \texttt{H5D\_\_create}; no locator broadcast.
 
 \verysubsection{Why rank-0-only writing fails}
 
@@ -483,20 +473,19 @@ collective \texttt{H5Dcreate}. The proposal is therefore:
   the conditions the redundant-metadata model requires.
 \end{itemize}
 
-\verysubsection{Open items before this can be marked resolved}
+\verysubsection{Implementation status}
 
-\begin{itemize}
-\item The determinism argument inherits the identical-operations
-  invariant; any \emph{pre-existing} rank divergence would surface here
-  as silent locator divergence. A debug-build consistency check (e.g.,
-  \texttt{MPI\_Bcast} rank~0's locator and compare) should be part of
-  the prototype.
-\item Interaction with paged allocation and free-space-manager
-  settings, and the \texttt{H5FD\_MEM\_GHEAP} allocation type, needs
-  checking.
-\item Validation and review with the parallel metadata-cache
-  maintainers.
-\end{itemize}
+Implemented in \texttt{H5Z\_blob\_write()} (\texttt{src/H5Z.c}). The
+determinism argument inherits the identical-operations invariant, so
+any \emph{pre-existing} rank divergence would surface as silent locator
+divergence; a debug-build (\texttt{H5\_HAVE\_PARALLEL \&\&\ !NDEBUG})
+consistency check (\texttt{MPI\_Bcast} rank~0's locator, assert it
+matches) guards against that. Tested via
+\texttt{testpar/t\_filters\_parallel.c} (\texttt{test\_par\_append\_filter\_blob})
+at 2 and 4 ranks. Interaction with paged allocation, free-space-manager
+settings, and \texttt{H5FD\_MEM\_GHEAP} has not been separately
+checked; review with the parallel metadata-cache maintainers is
+outstanding.
 
 \verysubsection{Custom callbacks in parallel (normative)}
 
@@ -681,53 +670,41 @@ full-mask materialization at open and document the memory cost. The
 library imposes no policy here; the blob carries only the path.
 
 
-\section{Under Discussion: Retrieving a Default-Stored Blob}
+\section{Retrieving a Blob}
 \label{sec:blob-getter}
-
-\begin{underdiscussion}
-No decision is recorded for this section; it exists to solicit review
-feedback before an accessor is added to the implementation.
-\end{underdiscussion}
-
-Prototype experience surfaced a gap in the default-storage path: a blob
-written through the default \texttt{H5HG} writer is currently
-\emph{write-only}. The library recovers the bytes into the pipeline at
-\texttt{H5Dopen}, and they propagate correctly through \texttt{H5Pcopy},
-\texttt{H5Pencode}/\texttt{H5Pdecode}, and \texttt{h5repack} --- but no
-public API exposes them. An application cannot read a blob back from a
-dataset's DCPL, and a filter cannot consume its own blob unless it
-implements \emph{both} \texttt{write\_blob} and \texttt{read\_blob}: a
-class that implements only \texttt{read\_blob} cannot interpret the
-default writer's locator, because \texttt{H5HG} is library-private. Both
-use cases in \SectionRef{sec:motivation} therefore require custom
-callbacks today, which makes the default storage path considerably less
-useful than it appears.
-
-\noindent\textbf{Option under discussion:} a public accessor,
 
 \begin{minted}{c}
 herr_t H5Pget_filter_blob(
     hid_t     plist_id,
-    unsigned  idx,        /* pipeline index, as in H5Pget_filter2       */
-    void     *buf,        /* NULL for a size query                      */
-    size_t   *size        /* in: capacity of buf; out: blob byte count */
+    unsigned  idx,      /* pipeline index, as in H5Pget_filter2         */
+    size_t    offset,   /* starting byte within the blob                */
+    void     *buf,      /* NULL for a size query                        */
+    size_t   *size       /* in: capacity of buf; out: bytes remaining
+                          *     from offset to the end of the blob      */
 );
 \end{minted}
 
-\noindent following the same size-query convention as
-RFC-HDFG-2026-001's \texttt{H5Pget\_filter\_params\_by\_idx}. This would
-let applications and tools (e.g., an \texttt{h5dump~-p} annotation that
-a blob is present and its size) retrieve default-stored blobs, and ---
-notably --- would let a \emph{filter} consume its blob without
-implementing any storage callbacks: the \texttt{set\_local} callback
-already receives the dataset's \texttt{dcpl\_id} and could fetch and
-cache the blob there. That combination (default storage +
-\texttt{set\_local} retrieval) would cover Use Case A with no
-filter-side storage code at all.
+Retrieves the blob attached to the filter at pipeline index
+\texttt{idx}, from whatever the property list's filter entry currently
+holds in memory (populated by \texttt{H5Pappend\_filter\_blob}, by
+\texttt{read\_blob} at \texttt{H5Dopen}, or by \texttt{H5Pdecode}) ---
+uniformly for default and custom storage. \texttt{offset} supports
+partial and streaming reads of large blobs; passing \texttt{0} and
+reading the full reported size retrieves the whole blob in one call. A
+filter at \texttt{idx} with no attached blob is not an error:
+\texttt{size} is set to \texttt{0}.
 
-Alternatives considered but not currently favoured: keeping the status
-quo (filters that consume blobs must implement both storage callbacks),
-or passing the blob into the filter callback through a new context
-parameter (rejected for widening the hot-path signature).
+This closes the gap the default \texttt{H5HG} storage path otherwise
+has: without it, a blob is write-only, since \texttt{H5HG} locators are
+library-private and a \texttt{read\_blob}-only filter class cannot
+interpret one. With this accessor, a filter can consume its own blob
+via \texttt{set\_local} (which already receives \texttt{dcpl\_id}) using
+default storage alone, with no storage callbacks at all.
+
+Declared in \texttt{H5Ppublic.h}; implemented in
+\texttt{H5Pget\_filter\_blob()} (\texttt{src/H5Pocpl.c}). Fortran
+binding \texttt{h5pget\_filter\_blob\_f} mirrors
+\texttt{h5pappend\_filter\_blob\_f}'s \texttt{TYPE(C\_PTR)}/\texttt{C\_LOC}
+convention.
 
 \end{document}
