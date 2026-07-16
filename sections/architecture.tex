@@ -186,15 +186,13 @@ address entries by pipeline index --- as \texttt{H5Pget\_filter2} does
 --- never by filter ID.
 
 \textbf{Decision: single entry point, no \texttt{H5Z\_params\_t}
-variant.} An earlier draft considered adding \texttt{H5Z\_PARAMS\_BLOB}
-as a third \texttt{H5Z\_params\_type\_t} tag so that blob configuration
-could flow through \texttt{H5Pappend\_filter}'s tagged union. This RFC
-does not do so: \texttt{H5Z\_params\_t} is designed around values that
-fit comfortably in a compound literal, and forcing a multi-megabyte
-buffer through that union would either double-store the buffer or
-complicate its lifetime rules for no benefit. \texttt{H5Pappend\_filter\_blob}
-is a dedicated function with a signature suited to its purpose;
-\texttt{H5Z\_params\_type\_t} is unchanged by this RFC.
+variant.} \texttt{H5Pappend\_filter\_blob} is a dedicated function
+rather than a new \texttt{H5Z\_PARAMS\_BLOB} tag on
+\texttt{H5Z\_params\_t}: that union is designed around values that fit
+comfortably in a compound literal, and forcing a multi-megabyte buffer
+through it would either double-store the buffer or complicate its
+lifetime rules for no benefit. \texttt{H5Z\_params\_type\_t} is
+unchanged by this RFC.
 
 \verysubsection{Parameters}
 \begin{itemize}
