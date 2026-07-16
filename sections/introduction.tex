@@ -40,59 +40,24 @@ This design does not cover:
 \subsection{Relationship to RFC-HDFG-2026-001}
 \label{sec:relationship}
 
-This design was, for a short period, folded directly into
-RFC-HDFG-2026-001 as a single feature before being split back out into
-this standalone RFC; the resolved design decisions in
-\SectionRef{sec:decisions} carry forward unchanged from that period.
-
-RFC-HDFG-2026-001 has since taken an on-disk format change into its own
-scope: it defines \texttt{H5O\_PLINE\_VERSION\_3}, which persists the
-validated parameter string verbatim in each pipeline entry, gated by
-\texttt{H5Pset\_libver\_bounds}. That change is favorable to this RFC:
-the pipeline-message versioning plumbing (encoder/decoder branching,
+This RFC layers on top of RFC-HDFG-2026-001's
+\texttt{H5O\_PLINE\_VERSION\_3} pipeline-message format, which persists
+a filter's validated parameter string verbatim, gated by
+\texttt{H5Pset\_libver\_bounds}. This RFC's blob locator is a per-entry
+field on that same version-3 record (\SectionRef{sec:blob-format}); the
+versioning plumbing (encoder/decoder branching,
 \texttt{H5O\_pline\_ver\_bounds[]} row, libver gating, copy/delete
-handling) that this RFC's blob locator needs is now being built by
-RFC-HDFG-2026-001 rather than introduced here, and this RFC layers a
-per-entry blob locator on the version-3 record
-(\SectionRef{sec:blob-format}).
-
-RFC-HDFG-2026-001 does not reserve any placeholder fields in
-\texttt{H5Z\_class3\_t} for this RFC. An earlier draft reserved three
-\texttt{void~*} fields (\texttt{write\_blob}/\texttt{read\_blob}/\texttt{close\_blob})
-for later activation by this RFC; that approach was dropped because
-pre-reserving an opaque placeholder does not avoid the struct-version
-bump this feature needs once real callback signatures are decided --- it
-only defers the decision.
+handling) belongs to RFC-HDFG-2026-001. RFC-HDFG-2026-001's
+\texttt{H5Z\_class3\_t} does not reserve placeholder fields for this
+RFC's callbacks.
 
 \verysubsection{Same-release constraint (normative)}
 
-The blob callbacks and the pipeline-message format version
-(\SectionRef{sec:blob-format}) \textbf{must land in the same library
-release}. The callbacks are non-functional without the on-disk format
-that stores the blob locator, so shipping them earlier adds dead fields
-to a public struct while the design is still exposed to change ---
-and any post-ship signature change forces a \texttt{H5Z\_class4\_t}.
-Speculatively shipping unproven callback fields is exactly how the
-earlier reserved-\texttt{void~*} mistake happened. Concretely:
-
-\begin{itemize}
-\item \textbf{If RFC-HDFG-2026-001's \texttt{H5Z\_class3\_t} has not yet
-  shipped} when this RFC's format work is scheduled into a release, the
-  three blob callbacks (\SectionRef{sec:blob-callbacks}) are added
-  directly to \texttt{H5Z\_class3\_t} in that same release. No new
-  struct version is required. \texttt{H5Z\_class3\_t} must \emph{not}
-  carry the callbacks in any earlier release that lacks the format
-  version.
-\item \textbf{If \texttt{H5Z\_class3\_t} has already shipped} (without
-  the callbacks, per the previous point), this RFC requires a
-  \texttt{H5Z\_class4\_t} carrying them, introduced --- again --- in the
-  same release as the format version, using the
-  \texttt{H5Z\_CLASS\_T\_VERS\_MAX} versioning pattern documented in
-  RFC-HDFG-2026-001.
-\end{itemize}
-
-Release targeting for the format version itself is discussed in
-\SectionRef{sec:release-targeting}.
+The blob callbacks (\SectionRef{sec:blob-callbacks}) and the
+pipeline-message format version (\SectionRef{sec:blob-format}) must
+land in the same library release, since the callbacks are
+non-functional without the on-disk format that stores the blob locator.
+Release targeting is discussed in \SectionRef{sec:release-targeting}.
 
 \subsection{Motivation}
 \label{sec:motivation}
@@ -100,10 +65,8 @@ Release targeting for the format version itself is discussed in
 RFC-HDFG-2026-001 raised the practical filter-configuration-size limit
 from 256 \texttt{cd\_values} elements (~1~KB) to 4096 characters via a
 human-readable parameter string. This is sufficient for most filters
-but not for all. Two use cases from LibPressio (raised by @robertu94
-during the community review of RFC-HDFG-2026-001,
-HDFGroup/hdf5\_plugins\#255; see \texttt{LIBPRESSIO-FEEDBACK.md} in the
-RFC-HDFG-2026-001 repository) remain unaddressed:
+but not for all. Two use cases from LibPressio
+(HDFGroup/hdf5\_plugins\#255) remain unaddressed:
 
 \verysubsection{Use Case A --- SZ4 JIT compiler (primary; fundamental size limit)}
 SZ4 features a just-in-time compiler for fast user-defined modules. When

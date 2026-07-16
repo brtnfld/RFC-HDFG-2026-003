@@ -115,24 +115,11 @@ large-object references):
 \texttt{[has\_aux:1][aux\_loc:variable if has\_aux]}
 \end{center}
 
-\textbf{Version number.} This RFC needs a pipeline-message format
-bump. RFC-HDFG-2026-001 now introduces an on-disk format change of its
-own and claims \texttt{H5O\_PLINE\_VERSION\_3} for the
-configuration-string block.  Consequently:
-
-\begin{itemize}
-\item \textbf{If this RFC lands in the same release} as
-  RFC-HDFG-2026-001's format work, the \texttt{has\_aux}/\texttt{aux\_loc}
-  block is folded directly into \texttt{H5O\_PLINE\_VERSION\_3}, so the
-  pipeline message takes a single bump (see ``one bump, not two,''
-  \SectionRef{sec:release-targeting}).
-\item \textbf{Otherwise}, this RFC claims
-  \texttt{H5O\_PLINE\_VERSION\_4}, layered on the version-3 record as
-  shown above --- unless some other RFC has claimed that number first by
-  the time this RFC is finalized. Whoever finalizes this RFC should
-  check for version-number conflicts with any other pipeline-message
-  format work in flight at that time and claim the next free version.
-\end{itemize}
+\textbf{Version number.} RFC-HDFG-2026-001 claims
+\texttt{H5O\_PLINE\_VERSION\_3} for the configuration-string block; the
+\texttt{has\_aux}/\texttt{aux\_loc} block is folded directly into that
+same version, so the pipeline message takes a single bump for both
+features (\SectionRef{sec:release-targeting}).
 
 The blob bytes themselves are stored as a global-heap (\texttt{H5HG})
 object; the pipeline message records only the locator, not the bytes
@@ -202,16 +189,10 @@ the targeting decision:
 \item \textbf{Same-release constraint} (\SectionRef{sec:relationship}):
   the filter-class callbacks and the pipeline-message version must ship
   together.
-\item \textbf{One bump, not two.} RFC-HDFG-2026-001 now defines
-  \texttt{H5O\_PLINE\_VERSION\_3}, which persists the filter's
-  configuration string verbatim in the pipeline message. (Its earlier
-  draft instead deferred a typed \texttt{cd\_values} type-tag extension
-  to future work; that design is superseded and will not consume a
-  version number.) If this RFC lands within the same planning horizon,
-  the blob locator should be folded into that \emph{same} version~3
-  record and the same format bound, so the pipeline message does not
-  take two consecutive incompatible bumps; otherwise this RFC bumps to
-  version~4 (\SectionRef{sec:blob-format}).
+\item \textbf{One bump, not two.} The blob locator is folded into
+  RFC-HDFG-2026-001's \texttt{H5O\_PLINE\_VERSION\_3} record rather than
+  claiming its own version, so the pipeline message takes a single bump
+  for both features (\SectionRef{sec:blob-format}).
 \end{itemize}
 
 If the project designates a format-generation release (a ``3.0'' in the
