@@ -132,77 +132,16 @@ Runtime I/O is unaffected: \texttt{H5Z\_pipeline}, the hot path for
 chunk I/O, touches none of this. The blob is configuration data, loaded
 once at open time; compression/decompression performance is unchanged.
 
-\subsection{Alternative Considered: No-Format-Change Attribute Convention}
-\label{sec:blob-attr-fallback}
-
-A file format change is unavoidable for \emph{first-class} blob
-support: every field in the current pipeline message record is a small
-fixed integer or the inline name/\texttt{cd\_values}; the global-heap
-locator has nowhere to live. The one genuine no-format-change
-alternative is a reserved-attribute convention --- store the blob (or
-its heap locator) in a conventionally-named attribute on the dataset,
-the way dimension scales are implemented entirely as
-\texttt{DIMENSION\_LIST}/\texttt{REFERENCE\_LIST} attributes with no
-format change.
-
-This RFC \textbf{rejects} that fallback for the primary design, for
-concrete reasons:
-
-\begin{itemize}
-\item \textbf{No structural binding to a pipeline entry.} An attribute
-  hangs off the dataset, not off filter entry $i$ of the pipeline; the
-  association (including the duplicate-filter-ID case,
-  \SectionRef{sec:append-filter-blob}) would be by fragile naming
-  convention.
-\item \textbf{No lifecycle coupling.} The pipeline message's
-  copy/delete paths (\texttt{H5O\_\_pline\_copy\_file}, the
-  \texttt{delete} handler) would not carry or reclaim the attribute;
-  every tool and code path that touches pipelines would need parallel
-  attribute plumbing.
-\item \textbf{Namespace pollution.} The blob becomes a user-visible,
-  user-mutable attribute, with collision risk against application
-  attribute names.
-\end{itemize}
-
-It remains available as a stopgap a filter author can implement
-privately today (a filter's \texttt{set\_local} can read a
-conventionally-named attribute via the dataset's properties), and
-nothing in this RFC forbids that --- but the library-supported
-mechanism is the versioned pipeline message.
-
-\subsection{Release and Format-Generation Targeting}
+\subsection{Release Targeting}
 \label{sec:release-targeting}
 
-The pipeline-message version mechanism does not require a major
-release. The standard, repeatedly-used pattern is: add the new message
-version, add a row to \texttt{H5O\_pline\_ver\_bounds[]}, and let
-\texttt{H5Pset\_libver\_bounds} gate emission --- exactly how the
-layout message v4 (virtual datasets) shipped in HDF5~1.10, and how the
-datatype, fill-value, and link-info messages have all evolved. Older
-libraries encountering the new version fail cleanly with ``bad version
-number for filter pipeline message.''
-
-Two coordination requirements, rather than technical blockers, govern
-the targeting decision:
-
-\begin{itemize}
-\item \textbf{Same-release constraint} (\SectionRef{sec:relationship}):
-  the filter-class callbacks and the pipeline-message version must ship
-  together.
-\item \textbf{One bump, not two.} The blob locator is folded into
-  RFC-HDFG-2026-001's \texttt{H5O\_PLINE\_VERSION\_3} record rather than
-  claiming its own version, so the pipeline message takes a single bump
-  for both features (\SectionRef{sec:blob-format}).
-\end{itemize}
-
-If the project designates a format-generation release (a ``3.0'' in the
-reviewer's framing) for accumulated format work, this RFC's message
-version should be introduced at that release's format bound; note that
-\texttt{H5F\_LIBVER\_V200} already exists as a defined format slot at
-which no message currently bumps its version, illustrating that bounds
-and message versions are decoupled. This RFC takes no position on
-release numbering; it requires only libver gating and the two
-coordination rules above.
+This RFC's pipeline-message version ships gated by
+\texttt{H5Pset\_libver\_bounds} at the 3.0 format bound
+(\texttt{H5F\_LIBVER\_V300}), folded into RFC-HDFG-2026-001's
+\texttt{H5O\_PLINE\_VERSION\_3} record rather than claiming a version of
+its own (\SectionRef{sec:blob-format}). The filter-class callbacks and
+the pipeline-message version ship in that same release
+(\SectionRef{sec:relationship}).
 
 
 \section{Public API}
@@ -322,31 +261,17 @@ buffer is immutable after \texttt{H5Pappend\_filter\_blob}, so sharing
 is safe. This is an implementation-quality requirement, not a format or
 API question.
 
-\verysubsection{Alternatives considered for per-dataset association}
+\verysubsection{Author-computed blobs via \texttt{set\_local}}
 
-\begin{itemize}
-\item \textbf{Create-time argument} (blob passed to a new
-  \texttt{H5Dcreate}-family call alongside \texttt{type\_id}/\texttt{space\_id},
-  which are precedent for per-dataset arguments): keeps the DCPL a pure
-  reusable template, but adds a create-signature variant --- the very
-  thing property lists exist to avoid. Rejected for now; revisit if the
-  one-DCPL-per-blob model proves burdensome in practice.
-\item \textbf{Post-create attach} (an \texttt{H5Dset\_extent}-style
-  operation on an existing dataset): keeps the template clean, but the
-  blob would not exist at \texttt{H5Dcreate} time --- after the pipeline
-  message is first written --- forcing an object-header rewrite and
-  ordering/atomicity questions. Rejected.
-\item \textbf{\texttt{set\_local}-driven override}: \texttt{H5Z\_set\_local}
-  already runs against the dataset's \emph{private} DCPL copy, and
-  built-in filters (shuffle, szip) already rewrite their own pipeline
-  entry per dataset there. A filter whose blob is \emph{derivable} from
-  the dataset's datatype/dataspace can compute and install it in
-  \texttt{set\_local}, giving true one-template-DCPL behavior with no
-  new API. This works today under this RFC's design and is the
-  recommended pattern for author-computed blobs; it does not help
-  \emph{caller-supplied} per-dataset blobs, which use the
-  one-DCPL-per-blob model above.
-\end{itemize}
+A filter whose blob is \emph{derivable} from the dataset's
+datatype/dataspace can compute and install it in
+\texttt{H5Z\_set\_local}, which already runs against the dataset's
+private DCPL copy (built-in filters such as shuffle and szip already
+rewrite their own pipeline entry per dataset there). This gives true
+one-template-DCPL behavior with no new API and is the recommended
+pattern for author-computed blobs; it does not help
+\emph{caller-supplied} per-dataset blobs, which use the
+one-DCPL-per-blob model above.
 
 
 \section{Dataset Create / Open / Close Lifecycle}
