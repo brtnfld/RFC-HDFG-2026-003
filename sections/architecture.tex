@@ -598,12 +598,20 @@ reading the full reported size retrieves the whole blob in one call. A
 filter at \texttt{idx} with no attached blob is not an error:
 \texttt{size} is set to \texttt{0}.
 
-This closes the gap the default \texttt{H5HG} storage path otherwise
-has: without it, a blob is write-only, since \texttt{H5HG} locators are
-library-private and a \texttt{read\_blob}-only filter class cannot
-interpret one. With this accessor, a filter can consume its own blob
-via \texttt{set\_local} (which already receives \texttt{dcpl\_id}) using
-default storage alone, with no storage callbacks at all.
+This is a tooling/inspection accessor, not a general application-level
+data channel: it exists for the same reason
+\texttt{H5Pget\_filter\_params\_by\_idx} exists for config strings ---
+so \texttt{h5dump}, debugging, and migration tooling can see that a
+blob is present and inspect its bytes without needing the owning
+filter's plugin loaded. Applications are not expected to interpret a
+blob's contents; that remains the filter's business. A secondary
+consequence is that it closes the gap the default \texttt{H5HG}
+storage path otherwise has (without it, a blob under default storage
+is write-only, since \texttt{H5HG} locators are library-private and a
+\texttt{read\_blob}-only filter class cannot interpret one) --- a
+filter's own \texttt{set\_local} (which already receives
+\texttt{dcpl\_id}) can use this same accessor to consume its own blob
+under default storage, with no storage callbacks at all.
 
 Declared in \texttt{H5Ppublic.h}; implemented in
 \texttt{H5Pget\_filter\_blob()} (\texttt{src/H5Pocpl.c}). Fortran
