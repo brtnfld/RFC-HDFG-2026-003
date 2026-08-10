@@ -65,8 +65,8 @@ Release targeting is discussed in \SectionRef{sec:release-targeting}.
 RFC-HDFG-2026-001 raised the practical filter-configuration-size limit
 from 256 \texttt{cd\_values} elements (~1~KB) to 4096 characters via a
 human-readable parameter string. This is sufficient for most filters
-but not for all. Two use cases from LibPressio
-(HDFGroup/hdf5\_plugins\#255) remain unaddressed:
+but not for all. Two use cases from LibPressio, raised by its author
+in a comment on HDFGroup/hdf5\#6153, remain unaddressed:
 
 \verysubsection{Use Case A --- SZ4 JIT compiler (primary; fundamental size limit)}
 SZ4 features a just-in-time compiler for fast user-defined modules. When
