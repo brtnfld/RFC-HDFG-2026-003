@@ -81,13 +81,26 @@ filter implements the blob callbacks.
 
 \begin{minted}{c}
 /* H5Zprivate.h -- internal only; not part of the public API */
+typedef struct H5Z_blob_buf_t {
+    void   *data;          /* blob bytes                                    */
+    size_t  size;          /* byte length of data                          */
+    bool    from_callback; /* data came from read_blob; release via
+                            *close_blob, not H5MM_xfree                    */
+    size_t  nrefs;         /* current reference count                     */
+} H5Z_blob_buf_t;
+
 struct H5Z_filter_info_t {
     /* ... existing fields ... */
-    void            *aux_data;  /* in-memory blob; NULL if this filter has none */
-    size_t           aux_size;  /* byte length of aux_data                     */
-    H5Z_blob_loc_t   aux_loc;   /* on-disk locator; undefined until written    */
+    H5Z_blob_buf_t  *aux;      /* refcounted blob; NULL if this filter has none */
+    H5Z_blob_loc_t   aux_loc;  /* on-disk locator; undefined until written     */
 };
 \end{minted}
+
+The buffer is immutable once created, so every \texttt{H5Pcopy} of the
+pipeline property and every dataset's private DCPL copy at
+\texttt{H5Dcreate} share one allocation via
+\texttt{H5Z\_blob\_buf\_incref} instead of deep-copying it; it is freed
+when the last reference is released (\texttt{H5Z\_blob\_release}).
 
 
 \section{On-Disk Format}
@@ -206,8 +219,7 @@ unchanged by this RFC.
   the caller's buffer may be freed or reused immediately after the call.
 \item \texttt{size}---Length of \texttt{buf} in bytes. There is no fixed
   upper bound analogous to \texttt{H5Z\_CONFIG\_STRING\_MAX}; the
-  practical limit is available memory (note that the blob is deep-copied
-  with the DCPL, \SectionRef{sec:blob-per-dataset}).
+  practical limit is available memory.
 \end{itemize}
 
 \verysubsection{Returns}
@@ -247,17 +259,17 @@ idiom for per-dataset configuration that lives in the DCPL:
   dataset.
 \end{itemize}
 
-\verysubsection{Cost note: the blob is deep-copied with the pipeline}
+\verysubsection{Cost note: the blob buffer is shared, not deep-copied}
 
-The pipeline property is deep-copied on every \texttt{H5Pcopy}
+The pipeline property itself is copied on every \texttt{H5Pcopy}
 \emph{and} on every \texttt{H5Dcreate} (each dataset's private DCPL
-copy). A multi-megabyte blob therefore gets duplicated on each of these
-operations under the na\"ive implementation. The implementation should
-store \texttt{aux\_data} in a reference-counted (copy-on-write) buffer
-inside the pipeline property so DCPL copies share one allocation; the
-buffer is immutable after \texttt{H5Pappend\_filter\_blob}, so sharing
-is safe. This is an implementation-quality requirement, not a format or
-API question.
+copy), which would duplicate a multi-megabyte blob on each of these
+operations under a na\"ive implementation. The blob buffer is instead
+held in a reference-counted (copy-on-write) wrapper
+(\texttt{H5Z\_blob\_buf\_t}, \SectionRef{sec:blob-internal-state}) so
+DCPL copies share one allocation; the buffer is immutable after
+\texttt{H5Pappend\_filter\_blob}, so sharing is safe, and it is freed
+when the last reference drops.
 
 \verysubsection{Author-computed blobs via \texttt{set\_local}}
 
@@ -442,22 +454,21 @@ invoking it on such a DCPL already know they hold unusual data.
 \label{sec:blob-repack}
 
 \noindent\textbf{Decision:} No \texttt{h5repack}-specific code is
-needed; \texttt{H5Pcopy} is extended to deep-copy \texttt{aux\_data}.
+needed; \texttt{H5Pcopy} shares the source entry's refcounted blob
+buffer (\SectionRef{sec:blob-internal-state}) with the copy.
 
 \texttt{h5repack} copies a normal (non-external) dataset's DCPL via
 \texttt{H5Pcopy(dcpl\_in)} and does not call \texttt{H5HG} functions
-directly. The existing lifecycle already makes this work automatically,
-\emph{provided} \texttt{H5Pcopy} performs a deep copy of
-\texttt{aux\_data}:
+directly. The existing lifecycle already makes this work automatically:
 
 \begin{enumerate}
-\item \texttt{H5Dopen} on the source populates \texttt{aux\_data} in the
+\item \texttt{H5Dopen} on the source populates \texttt{aux} in the
   source DCPL's filter entry (via \texttt{read\_blob} or the default
   reader).
-\item \texttt{H5Pcopy(dcpl\_in)} must give the copy its own logical
-  \texttt{aux\_data} (a deep copy, or a shared reference-counted buffer
-  per \SectionRef{sec:blob-per-dataset}), leaving \texttt{aux\_loc}
-  undefined in the copy (the destination address is not yet known).
+\item \texttt{H5Pcopy(dcpl\_in)} gives the copy a new reference to the
+  same \texttt{aux} buffer (\texttt{H5Z\_blob\_buf\_incref}), leaving
+  \texttt{aux\_loc} undefined in the copy (the destination address is
+  not yet known).
 \item \texttt{H5Dcreate} with the copied DCPL in the destination file
   triggers \texttt{write\_blob} (or the default writer), producing a new
   heap object at a new locator in the destination file. Only the bytes
