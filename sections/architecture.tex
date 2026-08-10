@@ -397,11 +397,15 @@ any \emph{pre-existing} rank divergence would surface as silent locator
 divergence; a debug-build (\texttt{H5\_HAVE\_PARALLEL \&\&\ !NDEBUG})
 consistency check (\texttt{MPI\_Bcast} rank~0's locator, assert it
 matches) guards against that. Tested via
-\texttt{testpar/t\_filters\_parallel.c} (\texttt{test\_par\_append\_filter\_blob})
-at 2 and 4 ranks. Interaction with paged allocation, free-space-manager
-settings, and \texttt{H5FD\_MEM\_GHEAP} has not been separately
-checked; review with the parallel metadata-cache maintainers is
-outstanding.
+\texttt{testpar/t\_filters\_parallel.c} at 2 and 4 ranks:
+\texttt{test\_par\_append\_filter\_blob} (par-blob-01, the baseline
+collective create/write/read path), \texttt{test\_par\_blob\_cache\_sync\_stress}
+(par-blob-02, many further metadata-cache sync points against an
+already-open blob-bearing dataset), and
+\texttt{test\_par\_blob\_allocation\_settings\_matrix} (par-blob-04, the
+library's default file-space strategy versus paged allocation with
+persistent, non-default free-space management). Review with the
+parallel metadata-cache maintainers is outstanding.
 
 \verysubsection{Custom callbacks in parallel (normative)}
 
