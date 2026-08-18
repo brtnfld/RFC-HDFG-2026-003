@@ -116,10 +116,16 @@ canonical name of a built-in filter (\texttt{H5O\_PLINE\_EXT\_NAME},
 0x0002).
 
 \begin{center}
-\texttt{[id:2][name\_length:2][name:variable][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4]}\\
+\texttt{[id:2][name\_length:2][flags:2][cd\_nelmts:2][name:name\_length][cd\_values:cd\_nelmts$\times$4]}\\
 \texttt{[ext\_count:2]} then \texttt{ext\_count} $\times$
 \texttt{[ext\_type:2][ext\_flags:1][reserved:1][ext\_length:4][ext\_data:ext\_length]}
 \end{center}
+
+\noindent The version-2 fields are shown in their real on-disk order: the
+name length is written immediately after the filter ID, but the name bytes
+follow \texttt{cd\_nelmts}, and \texttt{name\_length} includes the
+trailing NUL.  The name fields are absent entirely for filters with
+\texttt{id~<~H5Z\_FILTER\_RESERVED}.
 
 This RFC adds no fields of its own.  It defines one block type, reserved
 for it by RFC-HDFG-2026-001:
