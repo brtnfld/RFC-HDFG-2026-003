@@ -85,7 +85,7 @@ version~3 without this RFC behaves safely on a file that uses it.
 \item \texttt{blk-01} (\textbf{locator round-trips as a well-formed
   block}): Create a blob-bearing dataset and decode its pipeline message
   directly.  Verify the entry carries exactly one block with
-  \texttt{ext\_type = 0x0003}, the critical bit set in
+  \texttt{ext\_type = 0x0002}, the critical bit set in
   \texttt{ext\_flags}, \texttt{reserved = 0}, and an \texttt{ext\_length}
   matching the file's address and length sizes.  Verify the decoded
   locator recovers the same blob bytes.
