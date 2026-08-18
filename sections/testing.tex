@@ -72,6 +72,51 @@ on-disk format (\SectionRef{sec:blob-format}).
   (\SectionRef{sec:blob-usecaseb}).
 \end{itemize}
 
+\subsection{Extension Block Encoding Tests}
+\label{sec:test-blob-block}
+
+The blob locator is carried as \texttt{H5O\_PLINE\_EXT\_BLOB}, a critical
+extension block in RFC-HDFG-2026-001's version-3 pipeline message
+(\SectionRef{sec:blob-format}).  These tests cover the framing rather than
+the feature: they are what establishes that a library implementing
+version~3 without this RFC behaves safely on a file that uses it.
+
+\begin{itemize}
+\item \texttt{blk-01} (\textbf{locator round-trips as a well-formed
+  block}): Create a blob-bearing dataset and decode its pipeline message
+  directly.  Verify the entry carries exactly one block with
+  \texttt{ext\_type = 0x0003}, the critical bit set in
+  \texttt{ext\_flags}, \texttt{reserved = 0}, and an \texttt{ext\_length}
+  matching the file's address and length sizes.  Verify the decoded
+  locator recovers the same blob bytes.
+\item \texttt{blk-02} (\textbf{coexistence with a configuration string}):
+  Append a filter with both a parameter string and a blob; verify the
+  entry carries \texttt{H5O\_PLINE\_EXT\_CONFIG} and
+  \texttt{H5O\_PLINE\_EXT\_BLOB} in ascending \texttt{ext\_type} order,
+  and that both round-trip independently.
+\item \texttt{blk-03} (\textbf{a version-3-only library rejects safely}):
+  The central compatibility claim of this RFC.  Build the library with
+  \texttt{H5O\_PLINE\_EXT\_BLOB} support compiled out --- version~3
+  otherwise intact --- and open a file written with it.  Verify: a
+  blob-bearing dataset fails to open with an error naming the
+  unrecognised block type and the filter ID; a sibling dataset in the
+  same file with only a configuration string opens normally and returns
+  its string; and no blob-bearing dataset is ever filtered using
+  \texttt{cd\_values} alone.  The last assertion is the one that matters
+  --- silently proceeding is the failure mode the critical bit exists to
+  prevent.
+\item \texttt{blk-04} (\textbf{libver bound is a hard error}): Set an
+  \texttt{H5Pset\_libver\_bounds} upper bound below the release that ships
+  this RFC, configure a blob-bearing filter, and verify
+  \texttt{H5Dcreate} fails with a clear error rather than writing a
+  message with the locator dropped (\SectionRef{sec:blob-format}).
+  Contrast with a configuration-string-only pipeline under the same
+  bound, which downgrades silently to version~2 by design.
+\item \texttt{blk-05} (\textbf{no version~4}): Verify that a file written
+  with a blob carries pipeline message version~3, not~4 --- i.e.\ that
+  this RFC introduced no message version of its own.
+\end{itemize}
+
 \subsection{Parallel HDF5 Tests}
 \label{sec:test-parallel}
 

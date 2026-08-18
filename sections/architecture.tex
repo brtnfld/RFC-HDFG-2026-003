@@ -107,39 +107,71 @@ when the last reference is released (\texttt{H5Z\_blob\_release}).
 \label{sec:blob-format}
 
 The baseline per-filter layout is the \texttt{H5O\_PLINE\_VERSION\_3}
-record defined by RFC-HDFG-2026-001, which appends a verbatim
-configuration-string block (\texttt{[config\_length:2][config:variable]})
-to the \texttt{H5O\_PLINE\_VERSION\_2} fields:
+record defined by RFC-HDFG-2026-001.  That record ends each filter entry
+with a list of self-describing \emph{extension blocks} --- each a type
+code, a flags byte carrying a \emph{critical} bit, a 32-bit length, and
+the payload --- of which RFC-HDFG-2026-001 defines two: the verbatim
+configuration string (\texttt{H5O\_PLINE\_EXT\_CONFIG}, 0x0001) and the
+canonical name of a built-in filter (\texttt{H5O\_PLINE\_EXT\_NAME},
+0x0002).
 
 \begin{center}
-\texttt{[id:2][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4][name:variable]}\\
-\texttt{[config\_length:2][config:variable]}
+\texttt{[id:2][name\_length:2][name:variable][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4]}\\
+\texttt{[ext\_count:2]} then \texttt{ext\_count} $\times$
+\texttt{[ext\_type:2][ext\_flags:1][reserved:1][ext\_length:4][ext\_data:ext\_length]}
 \end{center}
 
-This RFC's format adds a \texttt{has\_aux} bit after the
-configuration-string block and, when set, the fixed-size
-\texttt{H5Z\_blob\_loc\_t} encoding (address plus heap-object index, the
-same fields \texttt{H5HG\_t} already carries internally for other
-large-object references):
+This RFC adds no fields of its own.  It defines one block type, reserved
+for it by RFC-HDFG-2026-001:
 
 \begin{center}
-\texttt{[id:2][flags:2][cd\_nelmts:2][cd\_values:cd\_nelmts$\times$4][name:variable]}\\
-\texttt{[config\_length:2][config:variable]}\\
-\texttt{[has\_aux:1][aux\_loc:variable if has\_aux]}
+\begin{tabular}{ll}
+\toprule
+\textbf{Code} & \texttt{0x0003}, \texttt{H5O\_PLINE\_EXT\_BLOB} \\
+\textbf{Critical} & yes (\texttt{ext\_flags} bit~0 set) \\
+\textbf{Payload} & \texttt{H5Z\_blob\_loc\_t}: global-heap collection
+  address, then object index \\
+\textbf{Cardinality} & at most one per pipeline entry \\
+\bottomrule
+\end{tabular}
 \end{center}
 
-\textbf{Version number.} RFC-HDFG-2026-001 claims
-\texttt{H5O\_PLINE\_VERSION\_3} for the configuration-string block; the
-\texttt{has\_aux}/\texttt{aux\_loc} block is folded directly into that
-same version, so the pipeline message takes a single bump for both
-features (\SectionRef{sec:release-targeting}).
+The payload is the fixed-size \texttt{H5Z\_blob\_loc\_t} encoding
+(address plus heap-object index, the same fields \texttt{H5HG\_t} already
+carries internally for other large-object references), written with the
+file's address and length sizes.  The blob bytes themselves are stored as
+a global-heap (\texttt{H5HG}) object; the pipeline message records only
+the locator, never the bytes inline.
 
-The blob bytes themselves are stored as a global-heap (\texttt{H5HG})
-object; the pipeline message records only the locator, not the bytes
-inline. \texttt{H5O\_pline\_ver\_bounds[]} maps \texttt{H5F\_libver\_t}
-to the pipeline message version; a DCPL with a blob-bearing filter
-requires a libver upper bound that admits this RFC's pipeline-message
-version, exactly as any other version-gated format feature does.
+\textbf{Why the block is critical.} A reader that skipped it would see an
+entry whose \texttt{cd\_values} are complete-looking but whose actual
+configuration lives in the blob, and would filter data with the wrong
+parameters --- silently.  Setting the critical bit converts that into a
+clean dataset-open failure naming the unsupported block type, on any
+library that implements \texttt{H5O\_PLINE\_VERSION\_3} but not this RFC.
+That failure is scoped to the entries that need the blob: such a library
+still reads every other dataset in the file, including their
+configuration strings.
+
+\textbf{Version number.} This RFC does not claim a pipeline-message
+version.  It adds a block type inside RFC-HDFG-2026-001's
+\texttt{H5O\_PLINE\_VERSION\_3}, and inherits that RFC's
+encoder/decoder branching, \texttt{H5O\_pline\_ver\_bounds[]} row, libver
+gating, and copy/delete handling
+(\SectionRef{sec:release-targeting}).  No \texttt{H5O\_PLINE\_VERSION\_4}
+is introduced.
+
+\textbf{Libver gating is a hard error, not a downgrade.}
+RFC-HDFG-2026-001's Rule~3 silently drops extension blocks when the
+libver upper bound excludes them, which is correct for its own two
+non-critical block types: the entry stays executable and only
+introspection degrades.  That behaviour is wrong for a critical block.
+If the libver upper bound on a DCPL excludes the release that ships this
+RFC, and the DCPL carries a blob-bearing entry, \texttt{H5Dcreate} fails
+with a clear error rather than writing a version-2 or blob-less
+version-3 message.  Dropping the locator would produce a dataset whose
+filter cannot be configured on read --- a silent data-loss bug, not a
+degraded-introspection one.
 
 Runtime I/O is unaffected: \texttt{H5Z\_pipeline}, the hot path for
 chunk I/O, touches none of this. The blob is configuration data, loaded
@@ -148,13 +180,35 @@ once at open time; compression/decompression performance is unchanged.
 \subsection{Release Targeting}
 \label{sec:release-targeting}
 
-This RFC's pipeline-message version ships gated by
-\texttt{H5Pset\_libver\_bounds} at the 3.0 format bound
-(\texttt{H5F\_LIBVER\_V300}), folded into RFC-HDFG-2026-001's
-\texttt{H5O\_PLINE\_VERSION\_3} record rather than claiming a version of
-its own (\SectionRef{sec:blob-format}). The filter-class callbacks and
-the pipeline-message version ship in that same release
-(\SectionRef{sec:relationship}).
+This RFC's block type ships gated by \texttt{H5Pset\_libver\_bounds} at
+the bound of the release that ships it --- the 3.0 format bound
+(\texttt{H5F\_LIBVER\_V300}) if this RFC lands in 3.0.
+\texttt{H5O\_PLINE\_VERSION\_3} itself is gated at the bound of whichever
+release ships RFC-HDFG-2026-001, which is at or before this one; that RFC
+leaves the specific constant open as a release-timing decision.  The two
+bounds need not coincide, and that independence is the practical payoff of
+encoding the locator as a block rather than as a field:
+
+\begin{itemize}
+\item This RFC does not have to ship in the same release as version~3 of
+  the pipeline message.  Earlier drafts coupled them, because a fixed
+  \texttt{has\_aux} field could only be added by the release that defined
+  the record's layout.
+\item If version~3 ships before this RFC, a library from that earlier
+  release reads files written by the later one: it recovers configuration
+  strings for every entry and fails only on blob-bearing entries
+  (\SectionRef{sec:blob-format}).  Under the fixed-field design those
+  files would have been version~4, and the earlier library would have
+  rejected all of them --- including datasets using no blob at all.
+\item \texttt{H5O\_pline\_ver\_bounds[]} needs no new row for this RFC:
+  the message version does not change.  The bound is enforced on the
+  block type instead, at the point where the encoder decides whether it
+  may emit \texttt{H5O\_PLINE\_EXT\_BLOB}.
+\end{itemize}
+
+The filter-class callbacks (\SectionRef{sec:blob-callbacks}) and this
+block type must still ship together --- neither is usable without the
+other (\SectionRef{sec:relationship}).
 
 
 \section{Public API}
@@ -294,14 +348,15 @@ runs, for each filter with \texttt{aux\_data~!=~NULL}:
   \&aux\_loc)}, or the default \texttt{H5HG} writer if
   \texttt{write\_blob} is \texttt{NULL}.
 \item Store \texttt{aux\_loc} in \texttt{H5Z\_filter\_info\_t}.
-\item Encode the pipeline message at this RFC's format version with
-  \texttt{has\_aux} set and \texttt{aux\_loc} populated.
+\item Encode the pipeline message, attaching an
+  \texttt{H5O\_PLINE\_EXT\_BLOB} block carrying \texttt{aux\_loc} to that
+  entry (\SectionRef{sec:blob-format}).
 \end{enumerate}
 
 \textbf{Open} (\texttt{H5D\_\_open}):
 \begin{enumerate}
-\item Decode the pipeline message; for each filter with \texttt{has\_aux},
-  read \texttt{aux\_loc}.
+\item Decode the pipeline message; for each entry carrying an
+  \texttt{H5O\_PLINE\_EXT\_BLOB} block, read \texttt{aux\_loc} from it.
 \item Call \texttt{filter->cls->read\_blob(file\_id, aux\_loc, \&aux\_data,
   \&aux\_size)}, or the default \texttt{H5HG} reader if
   \texttt{read\_blob} is \texttt{NULL}.
@@ -503,9 +558,10 @@ HDF5 precedent for ``large binary thing referenced from the object
 header, recovered on demand'' is exactly \texttt{H5HG}, already used for
 large variable-length attribute data. If a genuine tooling need for a
 self-describing message type emerges after deployment, one can be
-introduced in a later file-format version without breaking files
-written under this design --- the pipeline message's \texttt{aux\_loc}
-field would simply become one of several supported locator kinds.
+introduced without breaking files written under this design, and without
+a new file-format version: it would be a second block type alongside
+\texttt{H5O\_PLINE\_EXT\_BLOB}, or a locator-kind discriminator inside
+that block's payload.
 
 \textbf{\texttt{del} callback obligation:} When a pipeline message is
 deleted (dataset deleted, filter removed), \texttt{H5HG\_remove(file, \&loc)}
@@ -513,6 +569,44 @@ must be called to reclaim the heap space. This is implemented in the
 pipeline message \texttt{delete} handler in \texttt{H5Opline.c},
 analogous to how the fill-value message's \texttt{delete} handler frees
 vlen data (\texttt{H5Ofill.c}).
+
+\subsection{Alternative Considered: A Reserved-Attribute Convention}
+\label{sec:blob-alt-attribute}
+
+The only design here that avoids a file-format change entirely is to
+store the blob in a reserved attribute on the dataset, following the
+dimension-scales model (\texttt{DIMENSION\_LIST} /
+\texttt{REFERENCE\_LIST}, implemented in \texttt{hl/src/H5DS.c}).  It was
+considered and rejected.
+
+The pipeline message as it stands has nowhere to put a global-heap
+locator --- every field is a small fixed integer or the inline
+name/\texttt{cd\_values} --- so first-class support requires the format
+work either way.  The attribute convention avoids that, at the cost of
+being second-class in four specific ways:
+
+\begin{itemize}
+\item \textbf{No structural binding to a pipeline entry.}  A pipeline may
+  contain the same filter ID more than once
+  (\SectionRef{sec:append-filter-blob}); an attribute keyed by filter ID
+  cannot say \emph{which} entry it configures, reintroducing exactly the
+  first-match ambiguity the per-entry design was built to avoid.
+\item \textbf{No copy or delete coupling.}  \texttt{H5Ocopy} and the
+  pipeline message's \texttt{delete} handler would not carry or reclaim
+  it; \texttt{H5O\_\_pline\_copy\_file} has no knowledge of dataset
+  attributes.  Every lifecycle operation would need bespoke handling, and
+  a missed one leaks heap space or silently drops configuration.
+\item \textbf{Tool invisibility.}  The configuration would not appear
+  where every tool already looks for filter information.
+\item \textbf{User-attribute collision risk.}  A reserved name in the
+  user attribute namespace is a name users can also write.
+\end{itemize}
+
+Because RFC-HDFG-2026-001 makes the pipeline message extensible, the
+argument that once favoured this fallback --- that a format change is
+expensive and should be avoided --- no longer holds.  This RFC adds a
+block type to an existing message version rather than a new version, so
+the format cost it was avoiding is largely already paid.
 
 \subsection{Use Case B: Reference to Another Dataset (Revised)}
 \label{sec:blob-usecaseb}

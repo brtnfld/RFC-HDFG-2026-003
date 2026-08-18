@@ -34,8 +34,10 @@ source files it touches.
   (\SectionRef{sec:append-filter-blob}); extend
   \texttt{H5P\_\_ocrt\_pipeline\_enc}/\texttt{\_dec} to serialize the
   \texttt{aux} buffer inline (\SectionRef{sec:blob-encode-decode}). \\
-\texttt{src/H5Opline.c} & Pipeline-message encode/decode of
-  \texttt{has\_aux}/\texttt{aux\_loc} (\SectionRef{sec:blob-format}); the
+\texttt{src/H5Opline.c} & Pipeline-message encode/decode of the
+  \texttt{H5O\_PLINE\_EXT\_BLOB} extension block carrying
+  \texttt{aux\_loc}, registered in the block-type table
+  RFC-HDFG-2026-001 defines (\SectionRef{sec:blob-format}); the
   \texttt{delete} handler calls \texttt{H5HG\_remove} to reclaim heap
   space when a blob-bearing filter entry or dataset is deleted;
   \texttt{H5O\_\_pline\_copy} shares the refcounted \texttt{aux} buffer
