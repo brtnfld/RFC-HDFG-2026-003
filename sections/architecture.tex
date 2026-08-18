@@ -180,30 +180,30 @@ once at open time; compression/decompression performance is unchanged.
 \subsection{Release Targeting}
 \label{sec:release-targeting}
 
-This RFC's block type ships gated by \texttt{H5Pset\_libver\_bounds} at
-the bound of the release that ships it --- the 3.0 format bound
-(\texttt{H5F\_LIBVER\_V300}) if this RFC lands in 3.0.
-\texttt{H5O\_PLINE\_VERSION\_3} itself is gated at the bound of whichever
-release ships RFC-HDFG-2026-001, which is at or before this one; that RFC
-leaves the specific constant open as a release-timing decision.  The two
-bounds need not coincide, and that independence is the practical payoff of
-encoding the locator as a block rather than as a field:
+Both this RFC and RFC-HDFG-2026-001 target the 3.0 release, and both are
+gated by \texttt{H5Pset\_libver\_bounds} at the same bound,
+\texttt{H5F\_LIBVER\_V300} --- the bound that admits
+\texttt{H5O\_PLINE\_VERSION\_3}.  Under the plan of record the two land
+together.
+
+Encoding the locator as a block rather than as a field nonetheless means
+the schedule is not load-bearing, which matters because plans slip:
 
 \begin{itemize}
-\item This RFC does not have to ship in the same release as version~3 of
-  the pipeline message.  Earlier drafts coupled them, because a fixed
-  \texttt{has\_aux} field could only be added by the release that defined
-  the record's layout.
-\item If version~3 ships before this RFC, a library from that earlier
-  release reads files written by the later one: it recovers configuration
-  strings for every entry and fails only on blob-bearing entries
-  (\SectionRef{sec:blob-format}).  Under the fixed-field design those
-  files would have been version~4, and the earlier library would have
-  rejected all of them --- including datasets using no blob at all.
-\item \texttt{H5O\_pline\_ver\_bounds[]} needs no new row for this RFC:
-  the message version does not change.  The bound is enforced on the
-  block type instead, at the point where the encoder decides whether it
-  may emit \texttt{H5O\_PLINE\_EXT\_BLOB}.
+\item If this RFC slips past 3.0, it does not drag the format with it.
+  Earlier drafts coupled the two, because a fixed \texttt{has\_aux} field
+  could only be added by the release that defined the record's layout; a
+  block type can be added by any later release.
+\item Were that to happen, a library from the earlier release would still
+  read files written by the later one: it recovers configuration strings
+  for every entry and fails only on blob-bearing entries
+  (\SectionRef{sec:blob-format}).  Under the fixed-field design those files
+  would have been version~4, and the earlier library would have rejected
+  all of them --- including datasets using no blob at all.
+\item \texttt{H5O\_pline\_ver\_bounds[]} needs no row of its own for this RFC:
+  the message version does not change, and the
+  \texttt{H5F\_LIBVER\_V300} row RFC-HDFG-2026-001 adds is the only one
+  involved.
 \end{itemize}
 
 The filter-class callbacks (\SectionRef{sec:blob-callbacks}) and this
