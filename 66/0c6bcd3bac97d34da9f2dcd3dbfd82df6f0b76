@@ -1,0 +1,31 @@
+RFC-HDFG-2026-003.tex
+  s_2dcd805dd0ed75::t_975052254689b2 62
+sections/abstract.tex
+  s_2dcd805dd0ed75::t_32ea8a41413b2b 21-26
+sections/architecture.tex
+  s_2dcd805dd0ed75::t_e2eaf81cba9e18 110-116,119-121,124-125,128-136,139-174,183-211,351-353,358-359,561-564,573-610
+sections/implementation.tex
+  s_2dcd805dd0ed75::t_1e1b52c8917854 37-40
+sections/introduction.tex
+  s_2dcd805dd0ed75::t_dc77c48886c514 46-52,59-65
+sections/testing.tex
+  s_2dcd805dd0ed75::t_05b8769876bc2f 75-119
+support/revisions.tex
+  s_2dcd805dd0ed75::t_ca5dad94a94f57 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "660c6bcd3bac97d34da9f2dcd3dbfd82df6f0b76",
+  "prompts": {},
+  "sessions": {
+    "s_2dcd805dd0ed75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0737e9df-fe8a-4672-8e5d-7c47d4d16c5e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "M. Scot Breitenfeld <brtnfld@hdfgroup.org>"
+    }
+  }
+}
