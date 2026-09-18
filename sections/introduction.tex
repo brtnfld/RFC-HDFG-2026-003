@@ -37,6 +37,26 @@ This design does not cover:
   in file~B).
 \end{itemize}
 
+\begin{outofscope}
+Decoupling the storage chunk from the unit handed to the compressor ---
+so a filter can operate across several chunks at once, amortize GPU
+host/device copies over a larger buffer, and support progressive
+decompression --- is a related but distinct problem, raised by Kevin
+Dougherty during review of this RFC (September 2026). It requires
+changes to \texttt{H5Z\_func\_t} and the chunk I/O hot path, which this
+RFC does not touch (\SectionRef{sec:goals}: ``the runtime chunk I/O hot
+path is unaffected''). It is future-RFC material, not a revision to
+any decision here --- with one naming caution for that future RFC: it
+should not call its multi-chunk compression buffer a ``blob''. This RFC
+already uses that word for a static, per-open, immutable configuration
+payload (\SectionRef{sec:blob-callbacks}); a runtime, per-I/O, mutable
+chunk-grouping buffer is a different kind of thing and needs a
+different name, or reviewers will conflate the two. RFC-HDFG-2026-001's
+extension-block mechanism (\SectionRef{sec:blob-format}) is a plausible
+vehicle for whatever locator or discriminator it ends up needing, but
+that choice belongs to that RFC.
+\end{outofscope}
+
 \subsection{Relationship to RFC-HDFG-2026-001}
 \label{sec:relationship}
 
@@ -94,6 +114,7 @@ back to the filter verbatim at open time. This RFC specifies that
 mechanism as a single, complete feature.
 
 \subsection{Goals}
+\label{sec:goals}
 
 \begin{enumerate}
 \item Filters can store configuration data of essentially arbitrary size,
