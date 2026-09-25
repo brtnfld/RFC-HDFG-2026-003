@@ -17,8 +17,11 @@ API introduced by RFC-HDFG-2026-001 (string-based filter configuration).
 This design covers:
 
 \begin{itemize}
-\item Three new, optional callbacks on \texttt{H5Z\_class3\_t}:
-  \texttt{write\_blob}, \texttt{read\_blob}, and \texttt{close\_blob}.
+\item Four new, optional callbacks on \texttt{H5Z\_class3\_t}:
+  \texttt{write\_blob}, \texttt{read\_blob}, \texttt{delete\_blob}, and
+  \texttt{close\_blob}.
+\item Segmented storage for large blobs, a checksum, and content sharing
+  of identical blobs within a file.
 \item A new public API function, \texttt{H5Pappend\_filter\_blob}.
 \item A pipeline-message on-disk format extension to carry a blob
   alongside a filter's existing \texttt{cd\_values}.

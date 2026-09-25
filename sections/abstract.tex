@@ -13,12 +13,15 @@ module that must store multi-megabyte pre-processed source code
 alongside the dataset, and a filter that needs only a small reference
 to a separately-stored HDF5 dataset (e.g., a spatial mask).
 
-The proposed design adds three new, NULL-able callbacks to
-\texttt{H5Z\_class3\_t} --- \texttt{write\_blob}, \texttt{read\_blob}, and
-\texttt{close\_blob} --- and a new public API, \texttt{H5Pappend\_filter\_blob},
-that appends a filter to a pipeline together with an opaque byte buffer.
-The blob is persisted as a global-heap (\texttt{H5HG}) object referenced
-from the filter-pipeline message.  The reference is carried as a single
+The proposed design adds four new, NULL-able callbacks to
+\texttt{H5Z\_class3\_t} --- \texttt{write\_blob}, \texttt{read\_blob},
+\texttt{delete\_blob}, and \texttt{close\_blob} --- and a new public API,
+\texttt{H5Pappend\_filter\_blob}, that appends a filter to a pipeline
+together with an opaque byte buffer.  The blob is persisted in the global
+heap (\texttt{H5HG}), checksummed, split into 1~MiB segments when large,
+and shared by content between datasets in a file.  It is referenced from
+the filter-pipeline message.  A filter reaches its blob while filtering
+chunks through RFC-HDFG-2026-001's per-dataset \texttt{init} callback.  The reference is carried as a single
 critical extension block, \texttt{H5O\_PLINE\_EXT\_BLOB}, in the
 version-3 record that RFC-HDFG-2026-001 introduces for verbatim
 configuration-string storage; this RFC defines no pipeline-message

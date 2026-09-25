@@ -15,21 +15,32 @@ source files it touches.
 \toprule
 \textbf{File} & \textbf{Change} \\
 \midrule
-\texttt{src/H5Zdevelop.h} & Add \texttt{H5Z\_blob\_loc\_t} and the three
-  blob callback typedefs; add the three fields to \texttt{H5Z\_class3\_t}
+\texttt{src/H5Zdevelop.h} & Add \texttt{H5Z\_blob\_loc\_t} and the four
+  blob callback typedefs; append the four fields to \texttt{H5Z\_class3\_t}
+  after RFC-HDFG-2026-001's \texttt{init}/\texttt{term}
   (\SectionRef{sec:blob-callbacks}). \\
 \texttt{src/H5Zprivate.h} & Add the reference-counted
   \texttt{H5Z\_blob\_buf\_t} wrapper and the \texttt{aux}/\texttt{aux\_loc}
   fields to \texttt{H5Z\_filter\_info\_t}
   (\SectionRef{sec:blob-internal-state}). \\
 \texttt{src/H5Z.c} & Wire up \texttt{write\_blob}/\texttt{read\_blob}/
-  \texttt{close\_blob} (or the default \texttt{H5HG}-based
-  implementation) into the create/open/close paths
-  (\SectionRef{sec:blob-lifecycle}); \texttt{H5Z\_blob\_buf\_new}/
+  \texttt{delete\_blob}/\texttt{close\_blob} (or the default
+  \texttt{H5HG}-based implementation) into the create/open/close/delete
+  paths (\SectionRef{sec:blob-lifecycle}), reading and writing blobs
+  before RFC-HDFG-2026-001's \texttt{init} runs; reject partial storage
+  callback sets in \texttt{H5Z\_register3}; never read a custom locator
+  through \texttt{H5HG\_read} when the plugin is unavailable;
+  segmented default storage for blobs over 1~MiB
+  (\SectionRef{sec:blob-storage-format}); \texttt{lookup3} checksum on
+  write and verification on read; \texttt{H5Z\_blob\_buf\_new}/
   \texttt{\_incref} and the decrement-and-maybe-free logic in
   \texttt{H5Z\_blob\_release}; prototype and validate the collective
   identical-insert path for parallel jobs, including a debug-build
   locator-consistency check (\SectionRef{sec:blob-parallel}). \\
+\texttt{src/H5Fprivate.h}, \texttt{src/H5Fint.c} & A per-open-file table
+  of stored default-storage blobs (size, checksum, buffer reference,
+  locator) for content sharing, released at file close
+  (\SectionRef{sec:blob-sharing}). \\
 \texttt{src/H5Pocpl.c} & Implement \texttt{H5Pappend\_filter\_blob}
   (\SectionRef{sec:append-filter-blob}); extend
   \texttt{H5P\_\_ocrt\_pipeline\_enc}/\texttt{\_dec} to serialize the
@@ -37,9 +48,11 @@ source files it touches.
 \texttt{src/H5Opline.c} & Pipeline-message encode/decode of the
   \texttt{H5O\_PLINE\_EXT\_BLOB} extension block carrying
   \texttt{aux\_loc}, registered in the block-type table
-  RFC-HDFG-2026-001 defines (\SectionRef{sec:blob-format}); the
-  \texttt{delete} handler calls \texttt{H5HG\_remove} to reclaim heap
-  space when a blob-bearing filter entry or dataset is deleted;
+  RFC-HDFG-2026-001 defines (\SectionRef{sec:blob-format}), including
+  the storage-kind byte, checksum, and size; the \texttt{delete} handler
+  decrements the blob object's reference count and removes it (every
+  segment, for a segmented blob) at zero, or calls \texttt{delete\_blob}
+  for custom storage (\SectionRef{sec:blob-sharing});
   \texttt{H5O\_\_pline\_copy} shares the refcounted \texttt{aux} buffer
   (\texttt{H5Z\_blob\_buf\_incref}) instead of deep-copying it
   (\SectionRef{sec:blob-repack}). \\

@@ -65,11 +65,51 @@ on-disk format (\SectionRef{sec:blob-format}).
   different blob in each copy, create two datasets; verify each dataset
   reads back its own blob (\SectionRef{sec:blob-per-dataset}).
 \item \texttt{blob-09} (\textbf{path-string dataset association, Use
-  Case B pattern}): With a test filter that stores a mask dataset's
-  path in its blob, create the mask and the filtered dataset, reopen
-  the file, and verify the filter's \texttt{read\_blob} opens the mask
-  via \texttt{H5Dopen2(file\_id, path, ...)} and reads correct contents
+  Case B pattern; the filter uses its blob on a reopened file}): A test
+  filter stores a mask dataset's path in its blob.  Its \texttt{init}
+  reads the path with \texttt{H5Pget\_filter\_blob}, opens the mask via
+  \texttt{H5Dopen2(file\_id, path, ...)} and keeps it in its state; its
+  chunk function checks the mask it is handed on every call; \texttt{term}
+  closes it.  Create, write, close the file, reopen, and read.  Verify
+  every chunk call on both the write and the read path received the
+  correct mask, and that \texttt{term} ran once per open.  The read half
+  is the case no pass-through filter test exercises: the data path
+  succeeds only if the blob reached the chunk function after a reopen
   (\SectionRef{sec:blob-usecaseb}).
+\item \texttt{blob-10} (\textbf{segmented blob}): A 64~MiB blob under
+  default storage, in a debug build.  Verify it reads back byte-identical
+  after a reopen, and that deleting the dataset frees at least half the
+  blob's size (every segment, not just the index).  The debug build is
+  the point: the metadata cache asserts on an entry larger than
+  \texttt{H5C\_MAX\_ENTRY\_SIZE} (32~MiB) in \texttt{H5C\_insert\_entry},
+  and a single-object blob of this size trips that assert --- confirmed by
+  running the test with segmentation disabled.
+\item \texttt{blob-11} (\textbf{checksum}): Corrupt one byte of a stored
+  blob in the file; verify \texttt{H5Dopen} fails with
+  \texttt{H5E\_READERROR}.  Repeat for a segmented blob, corrupting a
+  byte in a middle segment.
+\item \texttt{blob-12} (\textbf{content sharing}): Create three datasets
+  from separate DCPLs carrying byte-identical blobs, and one with a blob
+  that differs in a single byte.  Verify the file grows by far less than
+  the blob's size for the second and third datasets, and by at least its
+  size for the fourth.  Delete two of the three and verify almost no space
+  is freed and the third still reads its blob; delete the third and verify
+  the blob's space is freed; verify the fourth is unaffected, including
+  after a reopen.  Run for a single-object and a segmented blob.
+\item \texttt{blob-13} (\textbf{custom storage delete}): Register a class
+  with custom \texttt{write\_blob}/\texttt{read\_blob}/\texttt{delete\_blob}.
+  Deleting the dataset calls \texttt{delete\_blob} exactly once, with the
+  locator \texttt{write\_blob} returned (the callback rejects any other).
+\item \texttt{blob-14} (\textbf{custom storage without the plugin}):
+  Reopen a file with a custom-stored blob after unregistering the filter.
+  Verify \texttt{H5Dopen} succeeds without calling \texttt{read\_blob}
+  (the test's locator is not a heap address, so reading it as one would
+  fail the open), and that \texttt{H5Dread} fails.  Re-registering the
+  filter does not help the already-open dataset; reopening it does, and
+  the data then reads back correctly.
+\item \texttt{blob-E03} (\textbf{partial storage callbacks}):
+  \texttt{H5Zregister} rejects a class that sets \texttt{write\_blob} but
+  not \texttt{delete\_blob} (or any other strict subset of the three).
 \end{itemize}
 
 \subsection{Extension Block Encoding Tests}
@@ -145,6 +185,13 @@ protocol resolved.
   \texttt{par-blob-01} under paged allocation and non-default
   free-space-manager settings (\SectionRef{sec:blob-parallel} open
   items).
+\item \texttt{par-blob-05} (\textbf{segmentation and sharing in
+  parallel}): Repeat \texttt{par-blob-01} with a blob larger than one
+  segment, then create a second dataset whose DCPL is built separately
+  on each rank but carries identical blob bytes.  Verify every rank
+  computes identical locators, that the second dataset shares the first
+  one's object, and that the file passes \texttt{h5debug}/\texttt{h5stat}
+  checks (\SectionRef{sec:blob-sharing}).
 \end{itemize}
 
 \end{document}
