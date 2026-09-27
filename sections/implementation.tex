@@ -15,19 +15,32 @@ source files it touches.
 \toprule
 \textbf{File} & \textbf{Change} \\
 \midrule
-\texttt{src/H5Zdevelop.h} & Add \texttt{H5Z\_blob\_loc\_t} and the four
-  blob callback typedefs; append the four fields to \texttt{H5Z\_class3\_t}
-  after RFC-HDFG-2026-001's \texttt{init}/\texttt{term}
-  (\SectionRef{sec:blob-callbacks}). \\
-\texttt{src/H5Zprivate.h} & Add the reference-counted
+\texttt{src/H5Zdevelop.h} & Add \texttt{H5Z\_init\_func\_t} and
+  \texttt{H5Z\_term\_func\_t}, and append \texttt{init} and \texttt{term}
+  to \texttt{H5Z\_class3\_t} after \texttt{description}
+  (\SectionRef{sec:filter-state}); add \texttt{H5Z\_blob\_loc\_t} and the
+  four blob callback typedefs, and append the four fields after
+  \texttt{term} (\SectionRef{sec:blob-callbacks}). \\
+\texttt{src/H5Zprivate.h} & Add \texttt{state} and \texttt{state\_status}
+  (none / ready / failed) to \texttt{H5Z\_filter\_info\_t}, so the state
+  travels with the dataset's own pipeline and \texttt{H5Z\_pipeline}
+  reaches it at every one of its call sites without new arguments
+  (\SectionRef{sec:filter-state}).  Add the reference-counted
   \texttt{H5Z\_blob\_buf\_t} wrapper and the \texttt{aux}/\texttt{aux\_loc}
   fields to \texttt{H5Z\_filter\_info\_t}
   (\SectionRef{sec:blob-internal-state}). \\
-\texttt{src/H5Z.c} & Wire up \texttt{write\_blob}/\texttt{read\_blob}/
+\texttt{src/H5Z.c} & \texttt{H5Z\_state\_init} (runs \texttt{init} per
+  entry whose class is available; strict at create and copy, lenient at
+  open) and \texttt{H5Z\_state\_term}; \texttt{H5Z\_pipeline} passes the
+  entry's state, runs a deferred \texttt{init} for an entry whose plugin
+  it has just loaded, and refuses to run an entry whose class has
+  \texttt{init} but whose state is not ready; \texttt{H5Z\_can\_apply\_direct}
+  refuses such classes for fractal heaps (\SectionRef{sec:filter-state}).
+  Wire up \texttt{write\_blob}/\texttt{read\_blob}/
   \texttt{delete\_blob}/\texttt{close\_blob} (or the default
   \texttt{H5HG}-based implementation) into the create/open/close/delete
   paths (\SectionRef{sec:blob-lifecycle}), reading and writing blobs
-  before RFC-HDFG-2026-001's \texttt{init} runs; reject partial storage
+  before \texttt{init} runs at open; reject partial storage
   callback sets in \texttt{H5Z\_register3}; never read a custom locator
   through \texttt{H5HG\_read} when the plugin is unavailable;
   segmented default storage for blobs over 1~MiB
@@ -55,13 +68,23 @@ source files it touches.
   for custom storage (\SectionRef{sec:blob-sharing});
   \texttt{H5O\_\_pline\_copy} shares the refcounted \texttt{aux} buffer
   (\texttt{H5Z\_blob\_buf\_incref}) instead of deep-copying it
-  (\SectionRef{sec:blob-repack}). \\
-\texttt{src/H5Dchunk.c} & No changes. The runtime chunk I/O path
-  (\texttt{H5Z\_pipeline}) is unaffected; the blob is configuration data
-  loaded once at open time. \\
+  (\SectionRef{sec:blob-repack}) and clears the state fields, so property
+  lists and other copies never carry state (\SectionRef{sec:filter-state}). \\
+\texttt{src/H5Dint.c} & \texttt{init} in \texttt{H5D\_\_create} before
+  \texttt{H5D\_\_update\_oh\_info}, whose early allocation filters fill
+  chunks; \texttt{init} in \texttt{H5D\_\_open\_oid} after the pipeline and
+  any blob are read; \texttt{term} in \texttt{H5D\_close} after the
+  layout's chunk-cache flush, and on the create/open failure paths
+  (\SectionRef{sec:filter-state}). \\
+\texttt{src/H5Dchunk.c} & \texttt{H5D\_\_chunk\_copy} brackets the
+  variable-length/reference copy path with \texttt{init}/\texttt{term} on
+  a private copy of the pipeline (\SectionRef{sec:filter-state}).  No
+  blob-related changes: the blob is configuration data loaded once at open
+  time. \\
 \texttt{tools/src/h5repack/} & No changes needed; see
   \SectionRef{sec:blob-repack}. \\
-\texttt{test/} & New tests: create/open/close, parallel write/broadcast,
+\texttt{test/} & New tests: per-dataset state lifecycle
+  (\SectionRef{sec:test-filter-state}), create/open/close, parallel write/broadcast,
   \texttt{H5Pencode}/\texttt{H5Pdecode} round-trip, and \texttt{h5repack}
   cross-file copy for a blob-configured filter (\SectionRef{sec:test-blob}). \\
 \bottomrule

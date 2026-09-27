@@ -5,6 +5,179 @@
 \section{Filter Plugin Class Extension}
 \label{sec:class-extension}
 
+\subsection{Per-Dataset Filter State: \texttt{init} and \texttt{term}}
+\label{sec:filter-state}
+
+\textbf{Problem.}  Without these callbacks a filter has no per-dataset
+hook on the read path: \texttt{set\_local} runs only at
+\texttt{H5Dcreate}, and \texttt{H5Z\_func2\_t} (RFC-HDFG-2026-001)
+receives \texttt{cd\_values}, the DXPL, and chunk coordinates, but
+nothing that identifies which dataset it is serving.  A filter that must
+prepare something large before it can decode --- a learned compressor
+loading model weights, a JIT compiler building a kernel, a GPU filter
+uploading tables --- can either redo that work for every chunk or keep it
+in a plugin-global table, which has no correct key: two open datasets
+that share a filter but not its configuration would collide.  A filter
+that stores a blob with its dataset likewise needs a per-dataset point at
+which to read it on a reopened file (\SectionRef{sec:blob-callbacks}).
+
+\textbf{Callbacks.}  Two NULL-able callbacks build and release the state.
+The state is delivered to the filter callback through the
+\texttt{void~*state} argument that RFC-HDFG-2026-001 reserves on
+\texttt{H5Z\_func2\_t}; this RFC defines its value.
+
+\begin{minted}{c}
+/* Per-dataset state: built once per open dataset, released at close. */
+typedef herr_t (*H5Z_init_func_t)(hid_t     file_id,
+                                  hid_t     dcpl_id,
+                                  hid_t     type_id,
+                                  hid_t     space_id,  /* chunk shape */
+                                  unsigned  idx,       /* pipeline index */
+                                  void    **state_out);
+typedef herr_t (*H5Z_term_func_t)(void *state);
+\end{minted}
+
+\noindent Appended to \texttt{H5Z\_class3\_t} after RFC-HDFG-2026-001's
+\texttt{description}, and before this RFC's blob callbacks
+(\SectionRef{sec:blob-callbacks}); fields are appended, never inserted,
+so an initialiser written for the shorter layout still places every field
+it names correctly and leaves the rest \texttt{NULL}:
+
+\begin{minted}{c}
+    H5Z_init_func_t             init;         /* NULL-able */
+    H5Z_term_func_t             term;         /* NULL-able */
+\end{minted}
+
+\textbf{The \texttt{state} argument.}  On every \texttt{H5Z\_func2\_t}
+call for a pipeline entry, \texttt{state} is the value that entry's
+\texttt{init} stored in \texttt{*state\_out}, or \texttt{NULL} when the
+class has no \texttt{init}.  The library never calls \texttt{filter} for
+an entry whose class has \texttt{init} unless that \texttt{init}
+succeeded, so a filter that defines \texttt{init} may rely on
+\texttt{state} being what it built.  The callback treats \texttt{state}
+as read-only unless it synchronizes its own mutation.
+
+\textbf{Contract.}
+\begin{itemize}
+\item \textbf{When \texttt{init} runs.}  Once per pipeline entry, at
+  \texttt{H5Dcreate} (after \texttt{set\_local}, before any chunk is
+  filtered --- including fill-value chunks written by early allocation)
+  and when a dataset is first opened (after its pipeline message is
+  decoded and any blob read, \SectionRef{sec:blob-lifecycle}).  Further
+  \texttt{H5Dopen} calls on an already-open dataset share the existing
+  state and do not call \texttt{init} again.
+\item \textbf{What \texttt{init} receives.}  The file, the dataset's DCPL
+  (so it can read \texttt{cd\_values}, the stored configuration string, or
+  the entry's blob through \texttt{H5Pget\_filter\_blob},
+  \SectionRef{sec:blob-getter}), the datatype, a dataspace with the chunk
+  dimensions (the shape \texttt{set\_local} receives), and the entry's
+  pipeline index \texttt{idx}.  The index is needed because a pipeline may
+  contain the same filter ID more than once; index-addressed accessors
+  such as \texttt{H5Pget\_filter2} use it to find this entry.  With these
+  a filter computes once per dataset what \texttt{H5Z\_func2\_t} cannot
+  see --- for example the unfiltered chunk size, the product of
+  \texttt{H5Pget\_chunk}'s dimensions and \texttt{H5Tget\_size}, which a
+  decoder can then preallocate against on every chunk
+  (requested by @ajelenak on HDFGroup/hdf5\#6663).
+\item \textbf{When \texttt{term} runs.}  Exactly once for every
+  successful \texttt{init}: when the last handle to the dataset closes
+  (after the chunk cache is flushed, which is the last use of the
+  pipeline), or when a failed \texttt{H5Dcreate} unwinds.
+\item \textbf{State is never copied.}  It lives on the open dataset's own
+  pipeline.  \texttt{H5Dget\_create\_plist}, \texttt{H5Pcopy},
+  \texttt{H5Pencode}, and every other copy of the pipeline start without
+  it.
+\item \textbf{Failure at create} fails \texttt{H5Dcreate}.  Any entries
+  already initialized are released first.
+\item \textbf{Failure at open does not fail \texttt{H5Dopen}.}  The entry
+  is marked unusable, and I/O through it fails later: on read, or on write
+  for a required filter, while an optional filter is skipped on write,
+  as today when its plugin is missing.  Metadata stays readable --- a tool
+  can still open the dataset, list its attributes, and report its
+  pipeline on a machine that lacks, say, the GPU the filter's
+  \texttt{init} needs.
+\item \textbf{Plugin loading.}  \texttt{H5Dopen} does not search the
+  plugin path for every filter in a pipeline.  It runs \texttt{init} at
+  open for each entry whose class is already registered (built in,
+  registered by the application, or loaded earlier) and defines
+  \texttt{init}, and for each entry whose plugin the open loads anyway to
+  read a custom-stored blob (\SectionRef{sec:blob-lifecycle}).  Any other
+  plugin is loaded, as today, at the first chunk I/O through the entry;
+  if its class defines \texttt{init}, that \texttt{init} runs then, once,
+  before the first \texttt{filter} call, with the open-time failure
+  semantics above.  An application that wants \texttt{init} to run inside
+  \texttt{H5Dopen} --- for example to keep it within a collective call
+  (\SectionRef{sec:filter-state-parallel}) --- makes the class available
+  first, with \texttt{H5Zfilter\_avail} or \texttt{H5Zregister}.
+\item \textbf{No dataset, no state.}  Two pipeline users have no open
+  dataset.  \texttt{H5Ocopy} of chunked variable-length or reference data
+  decodes and re-encodes chunks; the library calls \texttt{init} (against
+  the source file, with a DCPL carrying the source pipeline) before the
+  copy and \texttt{term} after it, and a failing \texttt{init} fails the
+  copy.
+\item \textbf{Restriction: group heaps.}  A group's fractal heap
+  (dense link or attribute storage) has no dataset at all, so a class
+  that defines \texttt{init} is refused for it: creating the heap fails,
+  with an error naming the per-dataset requirement.
+\item \textbf{\texttt{init} must not modify the file.}  In a parallel job
+  it runs on every rank and must make the same HDF5 calls on every rank.
+  Read-only access --- for example opening a mask dataset that the filter
+  needs (\SectionRef{sec:blob-usecaseb}) --- is allowed.
+\end{itemize}
+
+\verysubsection{Per-dataset state in parallel}
+\label{sec:filter-state-parallel}
+
+When \texttt{init} runs inside \texttt{H5Dcreate} or \texttt{H5Dopen},
+which are collective, every rank builds its own state at the same point.
+State is per process and never shared between ranks.  Because
+\texttt{init} may not modify the file, running it on every rank adds no
+metadata-cache operations and cannot desynchronize the ranks' caches.
+The rule that it make the same HDF5 calls on every rank covers read-only
+calls too, such as opening a mask dataset, since those can be collective
+under \texttt{H5Pset\_all\_coll\_metadata\_ops}; an \texttt{init}
+deferred to first I/O (see \textbf{Plugin loading} above) runs outside a
+collective call and should make no such calls.  One case can diverge: an
+\texttt{init} that fails at open on some ranks but not others (for
+example, a GPU missing on one node).  The open still succeeds everywhere;
+the affected ranks fail their first I/O through that entry, and a
+collective write then fails on those ranks, as it would today if one rank
+lacked the plugin.
+
+\textbf{Why a callback pair rather than an accessor.}  Handing the filter
+callback a dataset handle, and letting it look up what it needs, would
+put that lookup back on every chunk and expose a handle whose lifetime
+the filter does not control.  A state pointer built once and owned by
+the dataset makes both the cost and the lifetime explicit.
+
+\verysubsection{Resulting \texttt{H5Z\_class3\_t} layout}
+
+With this RFC, \texttt{H5Z\_class3\_t} holds RFC-HDFG-2026-001's
+fields, then \texttt{init} and \texttt{term}, then the four blob
+callbacks, in this order:
+
+\begin{minted}{c}
+typedef struct H5Z_class3_t {
+    int                         version;
+    H5Z_filter_t                id;
+    unsigned                    encoder_present;
+    unsigned                    decoder_present;
+    const char                 *name;
+    H5Z_can_apply_func_t        can_apply;
+    H5Z_set_local_func_t        set_local;
+    H5Z_func2_t                 filter;       /* RFC-HDFG-2026-001 */
+    H5Z_set_config_func_t       set_config;   /* RFC-HDFG-2026-001 */
+    H5Z_get_config_func_t       get_config;   /* RFC-HDFG-2026-001 */
+    const char                 *description;  /* RFC-HDFG-2026-001 */
+    H5Z_init_func_t             init;         /* NULL-able */
+    H5Z_term_func_t             term;         /* NULL-able */
+    H5Z_write_blob_func_t       write_blob;   /* NULL-able; all-or-none */
+    H5Z_read_blob_func_t        read_blob;    /* NULL-able; all-or-none */
+    H5Z_delete_blob_func_t      delete_blob;  /* NULL-able; all-or-none */
+    H5Z_close_blob_func_t       close_blob;   /* NULL-able */
+} H5Z_class3_t;
+\end{minted}
+
 \subsection{Blob Callbacks}
 \label{sec:blob-callbacks}
 
@@ -29,7 +202,7 @@ in-memory buffer.
 
 \textbf{Reaching the blob while filtering.}  The filter callback
 (\texttt{H5Z\_func2\_t}) does not receive the blob.  A filter consumes it
-in RFC-HDFG-2026-001's per-dataset \texttt{init} callback, which runs
+in its per-dataset \texttt{init} callback (\SectionRef{sec:filter-state}), which runs
 after the blob has been read at \texttt{H5Dopen}, and at
 \texttt{H5Dcreate} while the blob is already attached to the DCPL:
 \texttt{init} reads it with
@@ -42,7 +215,7 @@ caches keyed on anything the filter callback can see are not reliable,
 because two open datasets can share a filter and \texttt{cd\_values} but
 not a blob.
 
-The three callbacks are independent of \texttt{set\_config}/\texttt{get\_config}:
+The blob callbacks are independent of \texttt{set\_config}/\texttt{get\_config}:
 a filter's parameter string continues to carry small, human-readable
 configuration, while the blob carries the large, opaque payload. A
 filter that needs both derives any small values it needs from dataset
@@ -88,8 +261,9 @@ typedef herr_t (*H5Z_delete_blob_func_t)(hid_t          file_id,
 typedef herr_t (*H5Z_close_blob_func_t)(void *buf, size_t size);
 \end{minted}
 
-Appended to \texttt{H5Z\_class3\_t}, after RFC-HDFG-2026-001's
-\texttt{init} and \texttt{term} (fields are appended, never inserted):
+Appended to \texttt{H5Z\_class3\_t}, after \texttt{init} and
+\texttt{term} (\SectionRef{sec:filter-state}; fields are appended, never
+inserted):
 
 \begin{minted}{c}
     H5Z_write_blob_func_t       write_blob;   /* NULL-able; all-or-none */
@@ -227,17 +401,15 @@ gating, and copy/delete handling
 (\SectionRef{sec:release-targeting}).  No \texttt{H5O\_PLINE\_VERSION\_4}
 is introduced.
 
-\textbf{Libver gating is a hard error, not a downgrade.}
-RFC-HDFG-2026-001's Rule~3 silently drops extension blocks when the
-libver upper bound excludes them, which is correct for its own two
-non-critical block types: the entry stays executable and only
-introspection degrades.  That behaviour is wrong for a critical block.
-If the libver upper bound on a DCPL excludes the release that ships this
-RFC, and the DCPL carries a blob-bearing entry, \texttt{H5Dcreate} fails
-with a clear error rather than writing a version-2 or blob-less
-version-3 message.  Dropping the locator would produce a dataset whose
-filter cannot be configured on read --- a silent data-loss bug, not a
-degraded-introspection one.
+\textbf{Libver gating.}  RFC-HDFG-2026-001's gating rules make a
+libver upper bound below \texttt{H5F\_LIBVER\_V300} a hard error
+(\texttt{H5E\_BADRANGE} from \texttt{H5Dcreate}, \texttt{H5Dcreate\_anon},
+and \texttt{H5Ocopy}) whenever any entry would carry any extension block,
+critical or non-critical; no block is ever dropped to write version~2.
+\texttt{H5O\_PLINE\_EXT\_BLOB} falls under that rule and needs no error
+rule of its own: a blob-bearing pipeline under such a bound fails exactly
+as a pipeline carrying only configuration strings does.  The critical bit
+matters only to readers.
 
 Runtime I/O is unaffected: \texttt{H5Z\_pipeline}, the hot path for
 chunk I/O, touches none of this. The blob is configuration data, loaded
@@ -420,7 +592,7 @@ runs, for each filter with \texttt{aux~!=~NULL}:
   \texttt{H5Z\_filter\_info\_t}; the pipeline encoder writes them as the
   entry's \texttt{H5O\_PLINE\_EXT\_BLOB} block (\SectionRef{sec:blob-format}).
 \end{enumerate}
-\noindent RFC-HDFG-2026-001's per-dataset \texttt{init} runs before these
+\noindent The per-dataset \texttt{init} (\SectionRef{sec:filter-state}) runs before these
 steps --- it must, since early allocation filters fill-value chunks
 before the object header is written --- and reads the blob from the DCPL,
 where \texttt{H5Pappend\_filter\_blob} already put it.  Writing is
@@ -442,10 +614,12 @@ failure earlier in \texttt{H5Dcreate} leaves nothing to reclaim.
 \item Verify the size and checksum; a mismatch fails the open with
   \texttt{H5E\_READERROR}.
 \item Populate \texttt{aux} in \texttt{H5Z\_filter\_info\_t}.
-\item RFC-HDFG-2026-001's per-dataset \texttt{init} runs after this.
+\item The per-dataset \texttt{init} runs after this
+  (\SectionRef{sec:filter-state}); for an entry whose plugin is not yet
+  available, it runs at the first chunk I/O instead.
 \end{enumerate}
 
-\textbf{Close}: RFC-HDFG-2026-001's \texttt{term} runs first, then
+\textbf{Close}: \texttt{term} (\SectionRef{sec:filter-state}) runs first, then
 \texttt{close\_blob(aux->data, aux->size)} (or the library's own release
 when \texttt{close\_blob} is \texttt{NULL}), and the fields are cleared.
 
@@ -806,7 +980,7 @@ supported way to produce or consume the persistable encoding itself.
 The filter stores the mask dataset's absolute path name inside its blob
 (the blob is filter-defined bytes; a NUL-terminated path plus any
 filter-private header is an ordinary payload). At \texttt{H5Dopen} time,
-the filter's RFC-HDFG-2026-001 \texttt{init} callback reads the path
+the filter's \texttt{init} callback (\SectionRef{sec:filter-state}) reads the path
 with \texttt{H5Pget\_filter\_blob}, opens the mask via
 \texttt{H5Dopen2(file\_id, path, H5P\_DEFAULT)} using the
 \texttt{file\_id} it receives, and keeps the handle in its state;
@@ -879,8 +1053,8 @@ blob is present and inspect its bytes without needing the owning
 filter's plugin loaded. Applications are not expected to interpret a
 blob's contents; that remains the filter's business.
 
-It is also how a filter consumes its own blob.  RFC-HDFG-2026-001's
-per-dataset \texttt{init} callback receives the dataset's
+It is also how a filter consumes its own blob.  The per-dataset
+\texttt{init} callback (\SectionRef{sec:filter-state}) receives the dataset's
 \texttt{dcpl\_id} and the entry's pipeline index, and runs at both
 \texttt{H5Dcreate} and \texttt{H5Dopen} after the blob is in memory; it
 reads the blob with this accessor and turns it into the state every

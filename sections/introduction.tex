@@ -20,6 +20,10 @@ This design covers:
 \item Four new, optional callbacks on \texttt{H5Z\_class3\_t}:
   \texttt{write\_blob}, \texttt{read\_blob}, \texttt{delete\_blob}, and
   \texttt{close\_blob}.
+\item Per-dataset filter state: optional \texttt{init} and \texttt{term}
+  callbacks on \texttt{H5Z\_class3\_t}, and the value of the
+  \texttt{state} argument that RFC-HDFG-2026-001 reserves on
+  \texttt{H5Z\_func2\_t} (\SectionRef{sec:filter-state}).
 \item Segmented storage for large blobs, a checksum, and content sharing
   of identical blobs within a file.
 \item A new public API function, \texttt{H5Pappend\_filter\_blob}.
@@ -74,7 +78,9 @@ reserves for it (\SectionRef{sec:blob-format}).  All versioning plumbing
 gating, copy/delete handling) belongs to RFC-HDFG-2026-001, and this RFC
 introduces no pipeline-message version of its own. RFC-HDFG-2026-001's
 \texttt{H5Z\_class3\_t} does not reserve placeholder fields for this
-RFC's callbacks.
+RFC's callbacks; it does reserve the \texttt{state} argument of
+\texttt{H5Z\_func2\_t}, always \texttt{NULL} there, which this RFC's
+\texttt{init} supplies (\SectionRef{sec:filter-state}).
 
 \verysubsection{Same-release constraint (normative)}
 

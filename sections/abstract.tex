@@ -21,7 +21,11 @@ together with an opaque byte buffer.  The blob is persisted in the global
 heap (\texttt{H5HG}), checksummed, split into 1~MiB segments when large,
 and shared by content between datasets in a file.  It is referenced from
 the filter-pipeline message.  A filter reaches its blob while filtering
-chunks through RFC-HDFG-2026-001's per-dataset \texttt{init} callback.  The reference is carried as a single
+chunks through per-dataset filter state, which this RFC also defines: NULL-able
+\texttt{init} and \texttt{term} callbacks on \texttt{H5Z\_class3\_t} build
+state once per open dataset and release it at close, and the state reaches
+every chunk through the \texttt{state} argument RFC-HDFG-2026-001 reserves
+on \texttt{H5Z\_func2\_t}.  The reference is carried as a single
 critical extension block, \texttt{H5O\_PLINE\_EXT\_BLOB}, in the
 version-3 record that RFC-HDFG-2026-001 introduces for verbatim
 configuration-string storage; this RFC defines no pipeline-message

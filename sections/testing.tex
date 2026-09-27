@@ -5,6 +5,57 @@
 \section{Test Plan}
 \label{sec:test-plan}
 
+\subsection{Per-Dataset State Tests}
+\label{sec:test-filter-state}
+
+These tests cover \texttt{init}, \texttt{term}, and the \texttt{state}
+argument (\SectionRef{sec:filter-state}).  The test filter tags its
+state with \texttt{cd\_values[0]}, read back from the DCPL inside
+\texttt{init}, and checks every chunk's state against the
+\texttt{cd\_values} it is invoked with.  A state delivered to the wrong
+dataset or the wrong pipeline entry is then detected as a mismatch, not
+only as a missing pointer.
+
+\begin{itemize}
+\item \texttt{state-01} (\textbf{create lifecycle}): \texttt{H5Dcreate}
+  runs \texttt{init} once, with a chunk dataspace of the dataset's rank;
+  every chunk written and read receives that state; \texttt{H5Dclose} runs
+  \texttt{term} once.  \texttt{init} also records the unfiltered chunk
+  size (\texttt{H5Pget\_chunk} dimensions times \texttt{H5Tget\_size}),
+  and the filter checks it against \texttt{nbytes} on every write.
+\item \texttt{state-02} (\textbf{open lifecycle and sharing}): After
+  reopening the file, two \texttt{H5Dopen} calls on one dataset run
+  \texttt{init} once; a second dataset runs its own \texttt{init}; each
+  dataset's reads see its own state; closing the first handle does not run
+  \texttt{term}, and closing the last one does.
+\item \texttt{state-03} (\textbf{duplicate filter IDs}): A pipeline with
+  the same filter ID twice runs \texttt{init} twice, each call receiving
+  the index of its own entry, and each entry's calls receive its own state.
+\item \texttt{state-04} (\textbf{failure at create}): An \texttt{init}
+  that fails makes \texttt{H5Dcreate} fail and leaves no link behind.
+  When the second of two entries fails, the first entry's state is
+  released (\texttt{term} count equals successful \texttt{init} count).
+\item \texttt{state-05} (\textbf{failure at open}): With \texttt{init}
+  failing, \texttt{H5Dopen} and \texttt{H5Dget\_create\_plist} succeed,
+  \texttt{H5Dread} fails, and no \texttt{term} runs for the failed entry.
+\item \texttt{state-06} (\textbf{group heaps refused}): A group whose GCPL
+  carries a filter with \texttt{init} fails to create its fractal heap
+  (on the first dense link insert), with an error naming the per-dataset
+  requirement.
+\item \texttt{state-07} (\textbf{object copy}): \texttt{H5Ocopy} of a
+  chunked variable-length dataset --- the one copy path that runs the
+  pipeline --- runs \texttt{init} and \texttt{term} exactly once around the
+  copy, and the copied data reads back correctly.
+\item \texttt{state-08} (\textbf{plugin loaded after open}): Reopen a file
+  whose filter is a dynamically loaded plugin not yet registered, with no
+  custom-stored blob.  Verify \texttt{H5Dopen} does not load the plugin or
+  run \texttt{init}; the first \texttt{H5Dread} loads it, runs
+  \texttt{init} once before the first \texttt{filter} call, and reads the
+  data correctly; \texttt{term} runs once at close.  Repeat with
+  \texttt{H5Zfilter\_avail} called before \texttt{H5Dopen} and verify
+  \texttt{init} runs inside \texttt{H5Dopen}.
+\end{itemize}
+
 \subsection{Blob Storage Tests}
 \label{sec:test-blob}
 
@@ -72,7 +123,8 @@ on-disk format (\SectionRef{sec:blob-format}).
   chunk function checks the mask it is handed on every call; \texttt{term}
   closes it.  Create, write, close the file, reopen, and read.  Verify
   every chunk call on both the write and the read path received the
-  correct mask, and that \texttt{term} ran once per open.  The read half
+  correct mask, and that \texttt{term} ran once per open
+  (\SectionRef{sec:filter-state}).  The read half
   is the case no pass-through filter test exercises: the data path
   succeeds only if the blob reached the chunk function after a reopen
   (\SectionRef{sec:blob-usecaseb}).
@@ -146,12 +198,14 @@ version~3 without this RFC behaves safely on a file that uses it.
   --- silently proceeding is the failure mode the critical bit exists to
   prevent.
 \item \texttt{blk-04} (\textbf{libver bound is a hard error}): Set an
-  \texttt{H5Pset\_libver\_bounds} upper bound below the release that ships
-  this RFC, configure a blob-bearing filter, and verify
-  \texttt{H5Dcreate} fails with a clear error rather than writing a
-  message with the locator dropped (\SectionRef{sec:blob-format}).
-  Contrast with a configuration-string-only pipeline under the same
-  bound, which downgrades silently to version~2 by design.
+  \texttt{H5Pset\_libver\_bounds} upper bound of
+  \texttt{H5F\_LIBVER\_V200}, configure a blob-bearing filter with no
+  configuration string, and verify \texttt{H5Dcreate} fails with
+  \texttt{H5E\_BADRANGE} rather than writing a message with the locator
+  dropped (\SectionRef{sec:blob-format}); verify \texttt{H5Ocopy} of a
+  blob-bearing dataset into a file with that bound fails the same way.
+  The behaviour is identical to that of a configuration-string-only
+  pipeline under the same bound (RFC-HDFG-2026-001 \texttt{fmt-05}).
 \item \texttt{blk-05} (\textbf{no version~4}): Verify that a file written
   with a blob carries pipeline message version~3, not~4 --- i.e.\ that
   this RFC introduced no message version of its own.
@@ -192,6 +246,12 @@ protocol resolved.
   computes identical locators, that the second dataset shares the first
   one's object, and that the file passes \texttt{h5debug}/\texttt{h5stat}
   checks (\SectionRef{sec:blob-sharing}).
+\item \texttt{par-state-01} (\textbf{per-dataset state on every rank}):
+  With a filter defining \texttt{init}/\texttt{term}, registered before
+  the collective calls, create, write collectively, close, reopen, and
+  read on all ranks; verify \texttt{init} and \texttt{term} each ran once
+  per rank per open, and that every rank's chunks received that rank's
+  state (\SectionRef{sec:filter-state-parallel}).
 \end{itemize}
 
 \end{document}
